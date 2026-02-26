@@ -434,7 +434,7 @@ esp-web-install-button button { padding: 16px 40px; font-size: 15px; }
     <div class="logo-glow"><div class="lobster-3d" id="lobster3d" title="Click me!">🦞</div></div>
     <div class="title"><span class="title-grad">LilyClaw</span></div>
     <div class="subtitle">Web Flasher</div>
-    <div style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent2);letter-spacing:1px">Firmware v1.4.8</div>
+    <div style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent2);letter-spacing:1px">Firmware v1.4.9</div>
   </div>
 
   <!-- Flash Card -->
@@ -555,36 +555,36 @@ esp-web-install-button button { padding: 16px 40px; font-size: 15px; }
     </table>
   </div>
 
-  <!-- What's new v1.4.8 -->
+  <!-- What's new v1.4.9 -->
   <div class="card">
-    <h2>// what's new in v1.4.8</h2>
+    <h2>// what's new in v1.4.9</h2>
     <div class="steps">
       <div class="step">
         <div class="step-num">★</div>
         <div class="step-content">
-          <h3>Smooth Head Servo Transitions (Full variant)</h3>
-          <p>All state-entry snaps eliminated. The head now glides smoothly between thinking, proud and idle positions using float exponential easing — no more brutal jumps.</p>
+          <h3>Fix: LLM Timeout 120s → 30s + TCP Keep-Alive</h3>
+          <p>HTTP timeout réduit de 120s à 30s pour éviter de bloquer l'agent pendant 2 minutes sur erreur réseau. TCP keep-alive activé pour prévenir les "Connection reset by peer" causés par l'inactivité de la connexion.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">★</div>
         <div class="step-content">
-          <h3>Non-Blocking Screensaver (Full variant)</h3>
-          <p>Screensaver no longer freezes the body animator task. The head drifts continuously toward random targets (~5s glide, new target every 12s) — dreamy and unobtrusive.</p>
+          <h3>Fix: Retry automatique LLM (2 tentatives)</h3>
+          <p>Sur échec réseau, l'agent retente automatiquement 2 fois avec un backoff de 3s puis 6s avant de retourner une erreur à l'utilisateur. Récupère les coupures WiFi transitoires.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">★</div>
         <div class="step-content">
-          <h3>Fix: Living Gaze Convergence (Full variant)</h3>
-          <p>Fixed integer truncation in the gaze lerp: the head now reliably converges to its target. Small eye movements (&lt;7°) no longer freeze due to float precision loss.</p>
+          <h3>Fix: Sentinel non désarmé par geste WAVE (Full variant)</h3>
+          <p>Un mouvement détecté par le capteur ne peut plus désarmer accidentellement le mode sentinelle. Seule la commande explicite <code>sentinel_mode disarm</code> via Telegram peut le faire.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">✓</div>
         <div class="step-content">
-          <h3>Previous: Kimi Multi-Turn Fix &amp; Scheduler (v1.4.6–v1.4.7)</h3>
-          <p>Chat whitelist, <code>/status</code>/<code>/clear</code> commands, timer tool, HTTP fetch tool, task scheduler, and Kimi <code>reasoning_content</code> relay for multi-turn tool calls.</p>
+          <h3>Previous: Smooth Servo Transitions (v1.4.8)</h3>
+          <p>Transitions fluides de la tête avec easing float, screensaver non-bloquant, correction convergence du regard.</p>
         </div>
       </div>
     </div>
