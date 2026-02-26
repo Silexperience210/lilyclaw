@@ -199,7 +199,7 @@
 /* Scheduler */
 #define MIMI_SCHEDULER_FILE          "/spiffs/schedule.json"
 #define MIMI_SCHEDULER_MAX_TASKS     16
-#define MIMI_SCHEDULER_STACK         (4 * 1024)
+#define MIMI_SCHEDULER_STACK         (6 * 1024)
 
 /* Firmware Version */
 #define MIMI_FW_VERSION          "1.4.6"
