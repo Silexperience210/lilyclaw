@@ -3,6 +3,9 @@
 #include "tools/tool_get_time.h"
 #include "tools/tool_files.h"
 #include "tools/tool_ota.h"
+#include "tools/tool_http_fetch.h"
+#include "tools/tool_timer.h"
+#include "scheduler/task_scheduler.h"
 #ifdef MIMI_HAS_SERVOS
 #include "tools/tool_servo.h"
 #include "tools/tool_perception.h"
@@ -14,7 +17,7 @@
 
 static const char *TAG = "tools";
 
-#define MAX_TOOLS 16
+#define MAX_TOOLS 24
 
 static mimi_tool_t s_tools[MAX_TOOLS];
 static int s_tool_count = 0;
@@ -58,8 +61,11 @@ esp_err_t tool_registry_init(void)
 {
     s_tool_count = 0;
 
-    /* Register web_search */
+    /* Init tools that require explicit initialization */
     tool_web_search_init();
+    tool_timer_init();
+
+    /* Register web_search */
 
     mimi_tool_t ws = {
         .name = "web_search",
@@ -246,6 +252,77 @@ esp_err_t tool_registry_init(void)
     };
     register_tool(&gr);
 #endif
+
+    /* Register http_fetch */
+    mimi_tool_t hf = {
+        .name = "http_fetch",
+        .description = "Fetch content from any HTTP/HTTPS URL. Use for REST APIs, weather, "
+                       "crypto prices, RSS feeds, Home Assistant, or any web service. "
+                       "Returns raw response (JSON, HTML, text). Truncated at max_bytes.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{"
+            "\"url\":{\"type\":\"string\",\"description\":\"Full URL including https://\"},"
+            "\"method\":{\"type\":\"string\",\"enum\":[\"GET\",\"POST\"],\"description\":\"HTTP method (default: GET)\"},"
+            "\"body\":{\"type\":\"string\",\"description\":\"JSON body for POST requests\"},"
+            "\"max_bytes\":{\"type\":\"integer\",\"description\":\"Max response bytes (default 4096, max 16384)\"}},"
+            "\"required\":[\"url\"]}",
+        .execute = tool_http_fetch_execute,
+    };
+    register_tool(&hf);
+
+    /* Register set_timer */
+    mimi_tool_t st = {
+        .name = "set_timer",
+        .description = "Set a one-shot reminder. After the given number of minutes, sends "
+                       "a Telegram message to the current chat. Max 8 concurrent timers.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{"
+            "\"minutes\":{\"type\":\"integer\",\"description\":\"Minutes to wait (1-1440)\",\"minimum\":1,\"maximum\":1440},"
+            "\"message\":{\"type\":\"string\",\"description\":\"Message to send when timer fires\"}},"
+            "\"required\":[\"minutes\",\"message\"]}",
+        .execute = tool_set_timer_execute,
+    };
+    register_tool(&st);
+
+    /* Register schedule_add */
+    mimi_tool_t sa = {
+        .name = "schedule_add",
+        .description = "Create or update a recurring scheduled task. The agent will be invoked "
+                       "with the given prompt at the specified interval. Persists across reboots.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{"
+            "\"id\":{\"type\":\"string\",\"description\":\"Unique identifier (e.g. morning_briefing)\"},"
+            "\"prompt\":{\"type\":\"string\",\"description\":\"What to ask the AI when the task triggers\"},"
+            "\"interval_hours\":{\"type\":\"number\",\"description\":\"Repeat interval in hours (e.g. 24 for daily, 0.5 for every 30 min)\"}},"
+            "\"required\":[\"id\",\"prompt\"]}",
+        .execute = tool_schedule_add_execute,
+    };
+    register_tool(&sa);
+
+    /* Register schedule_list */
+    mimi_tool_t sl = {
+        .name = "schedule_list",
+        .description = "List all recurring scheduled tasks with their next run time.",
+        .input_schema_json =
+            "{\"type\":\"object\",\"properties\":{},\"required\":[]}",
+        .execute = tool_schedule_list_execute,
+    };
+    register_tool(&sl);
+
+    /* Register schedule_remove */
+    mimi_tool_t sr = {
+        .name = "schedule_remove",
+        .description = "Remove a recurring scheduled task by its id.",
+        .input_schema_json =
+            "{\"type\":\"object\","
+            "\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"Task id to remove\"}},"
+            "\"required\":[\"id\"]}",
+        .execute = tool_schedule_remove_execute,
+    };
+    register_tool(&sr);
 
     build_tools_json();
 

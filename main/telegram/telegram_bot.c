@@ -3,6 +3,7 @@
 #include "bus/message_bus.h"
 #include "proxy/http_proxy.h"
 #include "ota/ota_manager.h"
+#include "memory/session_mgr.h"
 #ifdef MIMI_HAS_DISPLAY
 #include "power/sleep_manager.h"
 #include "display/display_ui.h"
@@ -18,6 +19,8 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_wifi.h"
+#include "esp_spiffs.h"
 #include "nvs.h"
 #include "cJSON.h"
 
@@ -27,6 +30,9 @@ static char s_bot_token[128] = MIMI_SECRET_TG_TOKEN;
 static int64_t s_update_offset = 0;
 static int64_t s_last_saved_offset = -1;
 static int64_t s_last_offset_save_us = 0;
+
+/* Chat whitelist: comma-separated chat_ids, empty = allow all */
+static char s_allowed_chats[256] = MIMI_SECRET_ALLOWED_CHAT_ID;
 
 #define TG_OFFSET_NVS_KEY            "update_offset"
 #define TG_DEDUP_CACHE_SIZE          64
@@ -42,6 +48,23 @@ typedef struct {
     size_t len;
     size_t cap;
 } http_resp_t;
+
+/* ── Chat whitelist ─────────────────────────────────────────── */
+
+static bool is_chat_allowed(const char *chat_id)
+{
+    if (s_allowed_chats[0] == '\0') return true;  /* no restriction */
+
+    const char *p = s_allowed_chats;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (strlen(chat_id) == len && strncmp(p, chat_id, len) == 0) return true;
+        p += len;
+        if (*p == ',') p++;
+    }
+    return false;
+}
 
 /* ── Message deduplication (FNV-1a) ─────────────────────────── */
 
@@ -355,6 +378,13 @@ static void process_updates(const char *json_str)
             seen_msg_insert(msg_key);
         }
 
+        /* Whitelist check */
+        if (!is_chat_allowed(chat_id_str)) {
+            ESP_LOGW(TAG, "Blocked message from unlisted chat %s", chat_id_str);
+            telegram_send_message(chat_id_str, "Access denied.");
+            continue;
+        }
+
         ESP_LOGI(TAG, "Message update_id=%" PRId64 " msg_id=%d chat=%s: %.40s...",
                  uid, msg_id_val, chat_id_str, text->valuestring);
 
@@ -364,6 +394,51 @@ static void process_updates(const char *json_str)
             snprintf(ver_msg, sizeof(ver_msg),
                      "LilyClaw v%s (%s)", ota_get_version(), ota_get_variant());
             telegram_send_message(chat_id_str, ver_msg);
+            continue;
+        }
+
+        if (strcmp(text->valuestring, "/status") == 0) {
+            /* Free heap */
+            uint32_t free_heap = esp_get_free_heap_size();
+            uint32_t min_heap  = esp_get_minimum_free_heap_size();
+
+            /* Uptime */
+            int64_t up_s = esp_timer_get_time() / 1000000LL;
+            int up_h = (int)(up_s / 3600);
+            int up_m = (int)((up_s % 3600) / 60);
+            int up_sec = (int)(up_s % 60);
+
+            /* WiFi RSSI */
+            int8_t rssi = 0;
+            wifi_ap_record_t ap_info = {0};
+            if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+                rssi = ap_info.rssi;
+            }
+
+            /* SPIFFS usage */
+            size_t spiffs_total = 0, spiffs_used = 0;
+            esp_spiffs_info(NULL, &spiffs_total, &spiffs_used);
+
+            char status_buf[512];
+            snprintf(status_buf, sizeof(status_buf),
+                "*LilyClaw v%s (%s)*\n"
+                "Uptime: %dh%02dm%02ds\n"
+                "Free heap: %lu KB (min: %lu KB)\n"
+                "WiFi RSSI: %d dBm\n"
+                "SPIFFS: %d / %d KB used",
+                ota_get_version(), ota_get_variant(),
+                up_h, up_m, up_sec,
+                (unsigned long)(free_heap / 1024),
+                (unsigned long)(min_heap / 1024),
+                (int)rssi,
+                (int)(spiffs_used / 1024), (int)(spiffs_total / 1024));
+            telegram_send_message(chat_id_str, status_buf);
+            continue;
+        }
+
+        if (strcmp(text->valuestring, "/clear") == 0) {
+            session_clear(chat_id_str);
+            telegram_send_message(chat_id_str, "Session cleared.");
             continue;
         }
 
@@ -448,7 +523,7 @@ esp_err_t telegram_bot_init(void)
     /* NVS overrides take highest priority (set via CLI) */
     nvs_handle_t nvs;
     if (nvs_open(MIMI_NVS_TG, NVS_READONLY, &nvs) == ESP_OK) {
-        char tmp[128] = {0};
+        char tmp[256] = {0};
         size_t len = sizeof(tmp);
         if (nvs_get_str(nvs, MIMI_NVS_KEY_TG_TOKEN, tmp, &len) == ESP_OK && tmp[0]) {
             strncpy(s_bot_token, tmp, sizeof(s_bot_token) - 1);
@@ -459,6 +534,13 @@ esp_err_t telegram_bot_init(void)
             s_update_offset = offset;
             s_last_saved_offset = offset;
             ESP_LOGI(TAG, "Loaded Telegram update offset: %" PRId64, s_update_offset);
+        }
+
+        len = sizeof(s_allowed_chats);
+        memset(tmp, 0, sizeof(tmp));
+        if (nvs_get_str(nvs, MIMI_NVS_KEY_ALLOWED_CHATS, tmp, &len) == ESP_OK && tmp[0]) {
+            strncpy(s_allowed_chats, tmp, sizeof(s_allowed_chats) - 1);
+            ESP_LOGI(TAG, "Chat whitelist loaded: %s", s_allowed_chats);
         }
         nvs_close(nvs);
     }

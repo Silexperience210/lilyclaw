@@ -31,6 +31,9 @@
 #ifndef MIMI_SECRET_SEARCH_KEY
 #define MIMI_SECRET_SEARCH_KEY      ""
 #endif
+#ifndef MIMI_SECRET_ALLOWED_CHAT_ID
+#define MIMI_SECRET_ALLOWED_CHAT_ID ""
+#endif
 
 /* WiFi */
 #define MIMI_WIFI_MAX_RETRY          10
@@ -189,8 +192,17 @@
 #define MIMI_NVS_PROXY               "proxy_config"
 #define MIMI_NVS_SEARCH              "search_config"
 
+/* http_fetch tool */
+#define MIMI_HTTP_FETCH_DEFAULT_BYTES  4096
+#define MIMI_HTTP_FETCH_MAX_BYTES      16384
+
+/* Scheduler */
+#define MIMI_SCHEDULER_FILE          "/spiffs/schedule.json"
+#define MIMI_SCHEDULER_MAX_TASKS     16
+#define MIMI_SCHEDULER_STACK         (4 * 1024)
+
 /* Firmware Version */
-#define MIMI_FW_VERSION          "1.4.5"
+#define MIMI_FW_VERSION          "1.4.6"
 #define MIMI_GITHUB_RELEASES_URL "https://api.github.com/repos/Silexperience210/lilyclaw/releases/latest"
 #define MIMI_OTA_STACK           (8 * 1024)
 
@@ -203,4 +215,5 @@
 #define MIMI_NVS_KEY_PROXY_HOST      "host"
 #define MIMI_NVS_KEY_PROXY_PORT      "port"
 #define MIMI_NVS_KEY_PROVIDER        "provider"
+#define MIMI_NVS_KEY_ALLOWED_CHATS   "allowed_chats"
 

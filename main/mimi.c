@@ -21,6 +21,7 @@
 #include "cli/serial_cli.h"
 #include "proxy/http_proxy.h"
 #include "tools/tool_registry.h"
+#include "scheduler/task_scheduler.h"
 #include "portal/captive_portal.h"
 #include "ota/ota_manager.h"
 #ifdef MIMI_HAS_DISPLAY
@@ -102,7 +103,7 @@ void app_main(void)
     esp_log_level_set("esp-x509-crt-bundle", ESP_LOG_WARN);
 
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  MimiClaw - ESP32-S3 AI Agent");
+    ESP_LOGI(TAG, "  LilyClaw - ESP32-S3 AI Agent");
     ESP_LOGI(TAG, "  Version: v%s (%s)", ota_get_version(), ota_get_variant());
     ESP_LOGI(TAG, "========================================");
 
@@ -145,6 +146,7 @@ void app_main(void)
     ESP_ERROR_CHECK(telegram_bot_init());
     ESP_ERROR_CHECK(llm_proxy_init());
     ESP_ERROR_CHECK(tool_registry_init());
+    ESP_ERROR_CHECK(task_scheduler_init());
     ESP_ERROR_CHECK(agent_loop_init());
 
     /* Start Serial CLI first (works without WiFi) */
@@ -179,6 +181,7 @@ void app_main(void)
                 /* Start network-dependent services */
                 ESP_ERROR_CHECK(telegram_bot_start());
                 ESP_ERROR_CHECK(agent_loop_start());
+                ESP_ERROR_CHECK(task_scheduler_start());
                 ESP_ERROR_CHECK(ws_server_start());
 
                 /* Outbound dispatch task */
@@ -204,7 +207,7 @@ void app_main(void)
         }
     }
 
-    ESP_LOGI(TAG, "MimiClaw ready. Type 'help' for CLI commands.");
+    ESP_LOGI(TAG, "LilyClaw ready. Type 'help' for CLI commands.");
 
     /* Monitoring memoire periodique — aide a diagnostiquer les reboots */
     while (1) {

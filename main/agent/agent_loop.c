@@ -5,6 +5,8 @@
 #include "llm/llm_proxy.h"
 #include "memory/session_mgr.h"
 #include "tools/tool_registry.h"
+#include "tools/tool_timer.h"
+#include "scheduler/task_scheduler.h"
 #ifdef MIMI_HAS_DISPLAY
 #include "display/display_ui.h"
 #include "power/sleep_manager.h"
@@ -108,6 +110,9 @@ static void agent_loop_task(void *arg)
         if (err != ESP_OK) continue;
 
         ESP_LOGI(TAG, "Processing message from %s:%s", msg.channel, msg.chat_id);
+        /* Propagate current chat context to tools that need it */
+        tool_timer_set_chat(msg.chat_id);
+        scheduler_set_chat(msg.chat_id);
 #ifdef MIMI_HAS_SERVOS
         /* Enregistrer le canal pour les alertes sentinelle */
         tool_perception_set_chat(msg.channel, msg.chat_id);
@@ -148,11 +153,11 @@ static void agent_loop_task(void *arg)
             /* Send "working" indicator before each API call */
             {
                 static const char *working_phrases[] = {
-                    "mimi\xF0\x9F\x98\x97is working...",
-                    "mimi\xF0\x9F\x90\xBE is thinking...",
-                    "mimi\xF0\x9F\x92\xAD is pondering...",
-                    "mimi\xF0\x9F\x8C\x99 is on it...",
-                    "mimi\xE2\x9C\xA8 is cooking...",
+                    "LilyClaw\xF0\x9F\x98\x97 is working...",
+                    "LilyClaw\xF0\x9F\x90\xBE is thinking...",
+                    "LilyClaw\xF0\x9F\x92\xAD is pondering...",
+                    "LilyClaw\xF0\x9F\x8C\x99 is on it...",
+                    "LilyClaw\xE2\x9C\xA8 is cooking...",
                 };
                 const int phrase_count = sizeof(working_phrases) / sizeof(working_phrases[0]);
                 mimi_msg_t status = {0};

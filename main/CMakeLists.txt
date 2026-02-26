@@ -17,6 +17,9 @@ set(SRCS
     "tools/tool_get_time.c"
     "tools/tool_files.c"
     "tools/tool_ota.c"
+    "tools/tool_http_fetch.c"
+    "tools/tool_timer.c"
+    "scheduler/task_scheduler.c"
     "portal/captive_portal.c"
 )
 
