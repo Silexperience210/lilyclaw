@@ -1,7 +1,7 @@
 # LilyClaw: Pocket AI Assistant on a $15 Chip
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.4.4-brightgreen.svg)](https://github.com/Silexperience210/lilyclaw/releases/latest)
+[![Version](https://img.shields.io/badge/version-v1.4.6-brightgreen.svg)](https://github.com/Silexperience210/lilyclaw/releases/latest)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-mimiclaw-blue.svg)](https://deepwiki.com/memovai/mimiclaw)
 [![Discord](https://img.shields.io/badge/Discord-mimiclaw-5865F2?logo=discord&logoColor=white)](https://discord.gg/r8ZxSvB8Yr)
 [![X](https://img.shields.io/badge/X-@ssslvky-black?logo=x)](https://x.com/ssslvky)
@@ -22,7 +22,7 @@ LilyClaw turns a tiny ESP32-S3 Lilygo T-Display S3 board into a personal AI assi
 
 <p align="center">
   <a href="https://silexperience210.github.io/lilyclaw/">
-    <img src="https://img.shields.io/badge/⚡_Web_Flasher-Flash_LilyClaw_v1.4.4-ff4500?style=for-the-badge&logoColor=white" alt="Flash LilyClaw" />
+    <img src="https://img.shields.io/badge/⚡_Web_Flasher-Flash_LilyClaw_v1.4.6-ff4500?style=for-the-badge&logoColor=white" alt="Flash LilyClaw" />
   </a>
 </p>
 
@@ -93,6 +93,7 @@ Edit `main/mimi_secrets.h`:
 #define MIMI_SECRET_SEARCH_KEY      ""              // optional: Brave Search API key
 #define MIMI_SECRET_PROXY_HOST      ""              // optional: e.g. "10.0.0.1"
 #define MIMI_SECRET_PROXY_PORT      ""              // optional: e.g. "7897"
+#define MIMI_SECRET_ALLOWED_CHAT_ID ""              // optional: "123456789" or "123456789,987654321"
 ```
 
 Then build and flash:
@@ -139,6 +140,17 @@ mimi> session_list             # list all chat sessions
 mimi> session_clear 12345      # wipe a conversation
 mimi> restart                  # reboot
 ```
+
+### Telegram Commands
+
+Send these directly to your bot in Telegram:
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Show device status: uptime, free heap, WiFi RSSI, SPIFFS usage, firmware version |
+| `/clear` | Wipe the current chat session (clears message history with the AI) |
+
+Any other message is forwarded to the AI agent as a normal prompt.
 
 ## Memory
 
@@ -343,6 +355,11 @@ LilyClaw uses a ReAct agent loop — the AI calls tools during a conversation an
 | `write_file` | Write a file to SPIFFS flash storage |
 | `edit_file` | Edit a file on SPIFFS (find & replace) |
 | `list_dir` | List files in SPIFFS storage |
+| `http_fetch` | Fetch any HTTP/HTTPS URL (GET or POST) — weather APIs, crypto prices, Home Assistant, RSS, REST APIs *(v1.4.6+)* |
+| `set_timer` | Set a one-shot reminder — sends a Telegram message after N minutes (1–1440) *(v1.4.6+)* |
+| `schedule_add` | Create a recurring task — AI is invoked with a prompt on a fixed interval, persists across reboots *(v1.4.6+)* |
+| `schedule_list` | Show all recurring scheduled tasks and their next run time *(v1.4.6+)* |
+| `schedule_remove` | Remove a scheduled task by id *(v1.4.6+)* |
 | `move_head` | Move the robot head (horizontal/vertical 0-180°) *(v1.3+)* |
 | `move_claw` | Open/close claws (left/right/both, 0-180°) *(v1.3+)* |
 | `read_distance` | Read ultrasonic distance sensor (cm) *(v1.3+)* |
@@ -364,6 +381,21 @@ To enable web search, set a [Brave Search API key](https://brave.com/search/api/
 - **File tools** — agent can read/write/edit files on SPIFFS directly via tool use
 
 ## Changelog
+
+### v1.4.6 — New tools & Telegram commands
+- **`http_fetch` tool** — fetch any HTTP/HTTPS URL (GET or POST) directly from the AI; supports dynamic PSRAM buffers, configurable max bytes, and body truncation indicator
+- **`set_timer` tool** — one-shot reminders via FreeRTOS software timer (1–1440 min); pushes reminder to Telegram via outbound bus (safe from timer daemon task)
+- **Scheduler** — recurring tasks stored in `/spiffs/schedule.json`, checked every 60s; survives reboots; managed via `schedule_add`, `schedule_list`, `schedule_remove` tools
+- **`/status` Telegram command** — reports uptime, free heap (internal + PSRAM), WiFi RSSI, SPIFFS usage, and firmware version
+- **`/clear` Telegram command** — wipes the current chat session history with the AI
+- **Chat whitelist** — `MIMI_SECRET_ALLOWED_CHAT_ID` restricts the bot to specific Telegram chat IDs (comma-separated); leave empty to allow all
+
+### v1.4.5 — Telegram reliability + rename
+- **Persistent update offset** — `getUpdates` offset saved to NVS every 5 seconds; no more reprocessing old messages after reboot
+- **Deduplication cache** — FNV-1a64 hash ring (64 slots) prevents double-processing the same message even if Telegram delivers it twice
+- **Better error visibility** — `tg_response_is_ok()` extracts Telegram error descriptions for readable logs
+- **Improved `telegram_send_message()`** — returns `ESP_FAIL` on error, tracks partial send failures, skips stale updates
+- **Name update** — bot identity changed from "MimiClaw" to "LilyClaw" in system prompt and boot banner
 
 ### v1.4.4 — Stability fixes
 - Fixed uninitialized ring buffer in session manager
