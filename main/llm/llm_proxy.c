@@ -414,6 +414,12 @@ static cJSON *translate_messages_to_openai(const char *system_prompt, cJSON *mes
                 else
                     cJSON_AddNullToObject(oai, "content");
 
+                /* Relay Kimi reasoning_content so multi-turn tool calls are accepted */
+                cJSON *kimi_rc = cJSON_GetObjectItem(msg, "_kimi_reasoning");
+                if (kimi_rc && cJSON_IsString(kimi_rc)) {
+                    cJSON_AddStringToObject(oai, "reasoning_content", kimi_rc->valuestring);
+                }
+
                 if (tool_calls)
                     cJSON_AddItemToObject(oai, "tool_calls", tool_calls);
 
@@ -470,6 +476,12 @@ static void parse_openai_response(cJSON *root, llm_response_t *resp)
     cJSON *finish = cJSON_GetObjectItem(choice0, "finish_reason");
     if (finish && cJSON_IsString(finish)) {
         resp->tool_use = (strcmp(finish->valuestring, "tool_calls") == 0);
+    }
+
+    /* reasoning_content (Kimi thinking mode — must be relayed in multi-turn) */
+    cJSON *rc = cJSON_GetObjectItem(message, "reasoning_content");
+    if (rc && cJSON_IsString(rc) && rc->valuestring[0]) {
+        resp->reasoning_content = strdup(rc->valuestring);
     }
 
     /* Texte de la reponse */
@@ -637,6 +649,8 @@ void llm_response_free(llm_response_t *resp)
     free(resp->text);
     resp->text = NULL;
     resp->text_len = 0;
+    free(resp->reasoning_content);
+    resp->reasoning_content = NULL;
     for (int i = 0; i < resp->call_count; i++) {
         free(resp->calls[i].input);
         resp->calls[i].input = NULL;

@@ -62,6 +62,7 @@ typedef struct {
     llm_tool_call_t calls[MIMI_MAX_TOOL_CALLS];
     int call_count;
     bool tool_use;                               /* stop_reason == "tool_use" */
+    char *reasoning_content;                     /* Kimi "thinking" chain (must be relayed in multi-turn) */
 } llm_response_t;
 
 void llm_response_free(llm_response_t *resp);

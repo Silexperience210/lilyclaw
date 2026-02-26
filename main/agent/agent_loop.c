@@ -190,6 +190,10 @@ static void agent_loop_task(void *arg)
             cJSON *asst_msg = cJSON_CreateObject();
             cJSON_AddStringToObject(asst_msg, "role", "assistant");
             cJSON_AddItemToObject(asst_msg, "content", build_assistant_content(&resp));
+            /* Preserve Kimi reasoning_content so translate_messages_to_openai can relay it */
+            if (resp.reasoning_content) {
+                cJSON_AddStringToObject(asst_msg, "_kimi_reasoning", resp.reasoning_content);
+            }
             cJSON_AddItemToArray(messages, asst_msg);
 
             /* Execute tools and append results */
