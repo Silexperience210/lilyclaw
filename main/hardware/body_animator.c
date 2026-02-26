@@ -541,20 +541,7 @@ static void anim_presence(int dist)
     }
 }
 
-/* --- Animations par etat (inchangees) --- */
-
-/* IDLE : respiration calme */
-static void anim_idle(void)
-{
-    uint8_t hh = breathe(90, 12, 30);
-    uint8_t hv = breathe(90, 8, 40);
-    servo_set_angle_immediate(SERVO_HEAD_H, hh);
-    servo_set_angle_immediate(SERVO_HEAD_V, hv);
-
-    uint8_t cl = breathe(20, 15, 50);
-    servo_set_angle_immediate(SERVO_CLAW_L, cl);
-    servo_set_angle_immediate(SERVO_CLAW_R, cl);
-}
+/* --- Animations par etat --- */
 
 /* THINKING : tete penchee, pince gratte le menton */
 static void anim_thinking(void)

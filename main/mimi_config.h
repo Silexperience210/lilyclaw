@@ -190,7 +190,7 @@
 #define MIMI_NVS_SEARCH              "search_config"
 
 /* Firmware Version */
-#define MIMI_FW_VERSION          "1.4.0"
+#define MIMI_FW_VERSION          "1.4.3"
 #define MIMI_GITHUB_RELEASES_URL "https://api.github.com/repos/Silexperience210/lilyclaw/releases/latest"
 #define MIMI_OTA_STACK           (8 * 1024)
 
