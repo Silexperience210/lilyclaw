@@ -152,10 +152,14 @@ static esp_err_t llm_http_direct(const char *post_data, resp_buf_t *rb, int *out
         .url = get_api_url(),
         .event_handler = http_event_handler,
         .user_data = rb,
-        .timeout_ms = 120 * 1000,
+        .timeout_ms = 30 * 1000,
         .buffer_size = 4096,
         .buffer_size_tx = 4096,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .keep_alive_enable = true,
+        .keep_alive_idle = 5,
+        .keep_alive_interval = 5,
+        .keep_alive_count = 3,
     };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -225,7 +229,7 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
     /* Lire la reponse complete */
     char tmp[4096];
     while (1) {
-        int n = proxy_conn_read(conn, tmp, sizeof(tmp), 120000);
+        int n = proxy_conn_read(conn, tmp, sizeof(tmp), 30000);
         if (n <= 0) break;
         if (resp_buf_append(rb, tmp, n) != ESP_OK) break;
     }

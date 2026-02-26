@@ -168,12 +168,18 @@ static void agent_loop_task(void *arg)
             }
 
             llm_response_t resp;
-            err = llm_chat_tools(system_prompt, messages, tools_json, &resp);
-
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "LLM call failed: %s", esp_err_to_name(err));
-                break;
+            for (int retry = 0; retry <= 2; retry++) {
+                if (retry > 0) {
+                    ESP_LOGW(TAG, "LLM retry %d/2 after %ds...", retry, retry * 3);
+                    vTaskDelay(pdMS_TO_TICKS(retry * 3000));
+                }
+                err = llm_chat_tools(system_prompt, messages, tools_json, &resp);
+                if (err == ESP_OK) break;
+                ESP_LOGE(TAG, "LLM call failed: %s (attempt %d/3)",
+                         esp_err_to_name(err), retry + 1);
             }
+
+            if (err != ESP_OK) break;
 
             if (!resp.tool_use) {
                 /* Normal completion — save final text and break */

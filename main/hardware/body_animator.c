@@ -831,8 +831,8 @@ static void handle_gestures(void)
 
     switch (g) {
     case GESTURE_WAVE:
-        /* Toggle radar display */
-        if (s_state == DISPLAY_RADAR) {
+        /* Toggle radar display — never disarm sentinel via gesture */
+        if (s_state == DISPLAY_RADAR && sonar_radar_get_mode() != RADAR_SENTINEL) {
             display_ui_set_state(DISPLAY_IDLE);
             s_state = DISPLAY_IDLE;
             sonar_radar_set_mode(RADAR_OFF);
