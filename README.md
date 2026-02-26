@@ -22,7 +22,7 @@ LilyClaw turns a tiny ESP32-S3 Lilygo T-Display S3 board into a personal AI assi
 
 <p align="center">
   <a href="https://silexperience210.github.io/lilyclaw/">
-    <img src="https://img.shields.io/badge/⚡_Web_Flasher-Flash_LilyClaw_v1.4.6-ff4500?style=for-the-badge&logoColor=white" alt="Flash LilyClaw" />
+    <img src="https://img.shields.io/badge/⚡_Web_Flasher-Flash_LilyClaw_v1.4.9-ff4500?style=for-the-badge&logoColor=white" alt="Flash LilyClaw" />
   </a>
 </p>
 
