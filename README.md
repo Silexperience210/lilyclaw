@@ -1,7 +1,7 @@
 # LilyClaw: Pocket AI Assistant on a $15 Chip
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-v1.4.6-brightgreen.svg)](https://github.com/Silexperience210/lilyclaw/releases/latest)
+[![Version](https://img.shields.io/badge/version-v1.4.9-brightgreen.svg)](https://github.com/Silexperience210/lilyclaw/releases/latest)
 [![DeepWiki](https://img.shields.io/badge/DeepWiki-mimiclaw-blue.svg)](https://deepwiki.com/memovai/mimiclaw)
 [![Discord](https://img.shields.io/badge/Discord-mimiclaw-5865F2?logo=discord&logoColor=white)](https://discord.gg/r8ZxSvB8Yr)
 [![X](https://img.shields.io/badge/X-@silexperience-black?logo=x)](https://x.com/silexperience)
