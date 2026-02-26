@@ -202,7 +202,7 @@
 #define MIMI_SCHEDULER_STACK         (6 * 1024)
 
 /* Firmware Version */
-#define MIMI_FW_VERSION          "1.4.7"
+#define MIMI_FW_VERSION          "1.4.8"
 #define MIMI_GITHUB_RELEASES_URL "https://api.github.com/repos/Silexperience210/lilyclaw/releases/latest"
 #define MIMI_OTA_STACK           (8 * 1024)
 

@@ -28,8 +28,8 @@ static volatile bool s_is_blinking = false;
 static volatile uint32_t s_blink_end_tick = 0;
 static volatile int s_gaze_target_h = 90;
 static volatile int s_gaze_target_v = 90;
-static volatile int s_gaze_current_h = 90;
-static volatile int s_gaze_current_v = 90;
+static volatile float s_gaze_current_h = 90.0f;
+static volatile float s_gaze_current_v = 90.0f;
 static volatile uint32_t s_next_saccade_tick = 0;
 static volatile bool s_gaze_fixated = false;
 static volatile uint32_t s_fixation_end_tick = 0;
@@ -55,6 +55,15 @@ static int s_dist_idx          = 0;
 
 /* Dernier geste detecte (pour actions) */
 static gesture_t s_last_gesture = GESTURE_NONE;
+
+/* Easing non-bloquant pour transitions de tete (evite les snaps) */
+static float s_think_ease_h  = 55.0f;  /* ease HEAD_H vers 55° en thinking */
+static float s_proud_ease_h  = 90.0f;  /* ease HEAD_H vers 90° en proud */
+static float s_sleepy_ease_h = 90.0f;  /* ease HEAD_H vers 90° en sleepy */
+static float s_ss_ease_h     = 90.0f;  /* ease HEAD_H en screensaver */
+static float s_ss_ease_v     = 90.0f;  /* ease HEAD_V en screensaver */
+static int   s_ss_target_h   = 90;     /* cible aleatoire H screensaver */
+static int   s_ss_target_v   = 90;     /* cible aleatoire V screensaver */
 
 /* --- Helpers --- */
 
@@ -189,8 +198,8 @@ static void update_living_gaze(void)
     
     /* Interpolation douce vers la cible */
     float speed = s_gaze_fixated ? 0.02f : 0.15f; /* plus lent en fixation */
-    s_gaze_current_h += (int)((s_gaze_target_h - s_gaze_current_h) * speed);
-    s_gaze_current_v += (int)((s_gaze_target_v - s_gaze_current_v) * speed);
+    s_gaze_current_h += (s_gaze_target_h - s_gaze_current_h) * speed;
+    s_gaze_current_v += (s_gaze_target_v - s_gaze_current_v) * speed;
 }
 
 /* 4. Memoire d'attention avec "oubli" progressif */
@@ -245,6 +254,12 @@ static void update_mood_transition(void)
 
 void body_animator_set_mood(lobster_mood_t mood)
 {
+    if (mood != s_target_mood) {
+        /* Reinitialiser les eases depuis la position courante du servo */
+        float cur_h = (float)servo_get_angle(SERVO_HEAD_H);
+        s_proud_ease_h  = cur_h;
+        s_sleepy_ease_h = cur_h;
+    }
     s_target_mood = mood; /* On ne change pas directement, on transitionne */
 }
 
@@ -284,8 +299,8 @@ static void handle_autonomous_behaviors(bool person_present)
 static void anim_surprise(void)
 {
     /* Recul rapide */
-    servo_set_angle_immediate(SERVO_HEAD_H, clamp_angle(s_gaze_current_h - 15));
-    servo_set_angle_immediate(SERVO_HEAD_V, clamp_angle(s_gaze_current_v + 20));
+    servo_set_angle_immediate(SERVO_HEAD_H, clamp_angle((int)s_gaze_current_h - 15));
+    servo_set_angle_immediate(SERVO_HEAD_V, clamp_angle((int)s_gaze_current_v + 20));
     servo_set_angle_immediate(SERVO_CLAW_L, 180);
     servo_set_angle_immediate(SERVO_CLAW_R, 180);
 }
@@ -317,8 +332,8 @@ static void anim_idle(void)
     update_blink_schedule();
     update_living_gaze();
     
-    uint8_t hh = breathe_emotional((uint8_t)s_gaze_current_h);
-    uint8_t hv = breathe_emotional((uint8_t)s_gaze_current_v);
+    uint8_t hh = breathe_emotional(clamp_angle((int)s_gaze_current_h));
+    uint8_t hv = breathe_emotional(clamp_angle((int)s_gaze_current_v));
     
     servo_set_angle_immediate(SERVO_HEAD_H, hh);
     servo_set_angle_immediate(SERVO_HEAD_V, hv);
@@ -546,7 +561,10 @@ static void anim_presence(int dist)
 /* THINKING : tete penchee, pince gratte le menton */
 static void anim_thinking(void)
 {
-    servo_set_angle_immediate(SERVO_HEAD_H, 55);
+    /* Glissement progressif vers 55° — pas de snap sur l'entree */
+    s_think_ease_h += (55.0f - s_think_ease_h) * 0.28f;
+    servo_set_angle_immediate(SERVO_HEAD_H, clamp_angle((int)s_think_ease_h));
+
     uint8_t hv = breathe(75, 10, 20);
     servo_set_angle_immediate(SERVO_HEAD_V, hv);
 
@@ -567,7 +585,10 @@ static void anim_message_received(void)
 /* PROUD : fier */
 static void anim_proud(void)
 {
-    servo_set_angle_immediate(SERVO_HEAD_H, 90);
+    /* Retour au centre en douceur — transition depuis thinking sans snap */
+    s_proud_ease_h += (90.0f - s_proud_ease_h) * 0.28f;
+    servo_set_angle_immediate(SERVO_HEAD_H, clamp_angle((int)s_proud_ease_h));
+
     uint8_t hv = breathe(90, 20, 6);
     servo_set_angle_immediate(SERVO_HEAD_V, hv);
     servo_set_angle_immediate(SERVO_CLAW_L, 175);
@@ -577,22 +598,32 @@ static void anim_proud(void)
 /* SLEEPY : tete tombe */
 static void anim_sleepy(void)
 {
+    /* Retour au centre en douceur */
+    s_sleepy_ease_h += (90.0f - s_sleepy_ease_h) * 0.20f;
+    servo_set_angle_immediate(SERVO_HEAD_H, clamp_angle((int)s_sleepy_ease_h));
+
     uint8_t hv = breathe(45, 5, 60);
-    servo_set_angle_immediate(SERVO_HEAD_H, 90);
     servo_set_angle_immediate(SERVO_HEAD_V, hv);
     servo_set_angle_immediate(SERVO_CLAW_L, 5);
     servo_set_angle_immediate(SERVO_CLAW_R, 5);
 }
 
-/* SCREENSAVER : mouvements lents aleatoires */
+/* SCREENSAVER : derive lente non-bloquante — la tete glisse vers des cibles aleatoires */
 static void anim_screensaver(void)
 {
+    /* Nouvelles cibles toutes les ~12s (60 ticks x 200ms) */
     if ((s_tick % 60) == 0) {
-        servo_set_angle(SERVO_HEAD_H, rand_around(90, 80));
-        servo_set_angle(SERVO_HEAD_V, rand_around(90, 60));
-        servo_set_angle(SERVO_CLAW_L, rand_around(90, 80));
-        servo_set_angle(SERVO_CLAW_R, rand_around(90, 80));
+        s_ss_target_h = rand_around(90, 75);
+        s_ss_target_v = rand_around(90, 55);
+        /* Pinces : changement immediat, moins visibles que la tete */
+        servo_set_angle_immediate(SERVO_CLAW_L, rand_around(90, 75));
+        servo_set_angle_immediate(SERVO_CLAW_R, rand_around(90, 75));
     }
+    /* Glissement fluide de la tete (non-bloquant, ~5s pour 90% du trajet) */
+    s_ss_ease_h += (s_ss_target_h - s_ss_ease_h) * 0.18f;
+    s_ss_ease_v += (s_ss_target_v - s_ss_ease_v) * 0.18f;
+    servo_set_angle_immediate(SERVO_HEAD_H, clamp_angle((int)s_ss_ease_h));
+    servo_set_angle_immediate(SERVO_HEAD_V, clamp_angle((int)s_ss_ease_v));
 }
 
 /* Au revoir : grand signe de pince */
@@ -982,6 +1013,18 @@ esp_err_t body_animator_init(void)
 
 void body_animator_set_state(display_state_t state)
 {
+    if (state != s_state) {
+        /* Sur tout changement d'etat : reinitialiser les eases depuis la position courante */
+        float cur_h = (float)servo_get_angle(SERVO_HEAD_H);
+        float cur_v = (float)servo_get_angle(SERVO_HEAD_V);
+        s_think_ease_h  = cur_h;
+        s_proud_ease_h  = cur_h;
+        s_sleepy_ease_h = cur_h;
+        s_ss_ease_h     = cur_h;
+        s_ss_ease_v     = cur_v;
+        s_ss_target_h   = (int)cur_h;
+        s_ss_target_v   = (int)cur_v;
+    }
     s_state = state;
 }
 

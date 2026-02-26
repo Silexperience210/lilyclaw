@@ -434,7 +434,7 @@ esp-web-install-button button { padding: 16px 40px; font-size: 15px; }
     <div class="logo-glow"><div class="lobster-3d" id="lobster3d" title="Click me!">🦞</div></div>
     <div class="title"><span class="title-grad">LilyClaw</span></div>
     <div class="subtitle">Web Flasher</div>
-    <div style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent2);letter-spacing:1px">Firmware v1.4.7</div>
+    <div style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent2);letter-spacing:1px">Firmware v1.4.8</div>
   </div>
 
   <!-- Flash Card -->
@@ -555,50 +555,36 @@ esp-web-install-button button { padding: 16px 40px; font-size: 15px; }
     </table>
   </div>
 
-  <!-- What's new v1.4.7 -->
+  <!-- What's new v1.4.8 -->
   <div class="card">
-    <h2>// what's new in v1.4.7</h2>
+    <h2>// what's new in v1.4.8</h2>
     <div class="steps">
       <div class="step">
         <div class="step-num">★</div>
         <div class="step-content">
-          <h3>Fix: Kimi Multi-Turn Tool Calls</h3>
-          <p>Critical bug fix: <code>kimi-k2.5</code> "thinking" mode now works correctly across multiple tool calls. Previously failed with API 400 on the second LLM call.</p>
+          <h3>Smooth Head Servo Transitions (Full variant)</h3>
+          <p>All state-entry snaps eliminated. The head now glides smoothly between thinking, proud and idle positions using float exponential easing — no more brutal jumps.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">★</div>
         <div class="step-content">
-          <h3>Chat Whitelist</h3>
-          <p>Only allowed Telegram chat IDs can interact with LilyClaw. Configure via <code>MIMI_SECRET_ALLOWED_CHAT_ID</code>.</p>
+          <h3>Non-Blocking Screensaver (Full variant)</h3>
+          <p>Screensaver no longer freezes the body animator task. The head drifts continuously toward random targets (~5s glide, new target every 12s) — dreamy and unobtrusive.</p>
         </div>
       </div>
       <div class="step">
         <div class="step-num">★</div>
         <div class="step-content">
-          <h3><code>/status</code> &amp; <code>/clear</code> Commands</h3>
-          <p><code>/status</code> returns uptime, free heap, WiFi RSSI, SPIFFS usage and firmware version. <code>/clear</code> resets the current session.</p>
+          <h3>Fix: Living Gaze Convergence (Full variant)</h3>
+          <p>Fixed integer truncation in the gaze lerp: the head now reliably converges to its target. Small eye movements (&lt;7°) no longer freeze due to float precision loss.</p>
         </div>
       </div>
       <div class="step">
-        <div class="step-num">★</div>
+        <div class="step-num">✓</div>
         <div class="step-content">
-          <h3>Timer Tool</h3>
-          <p>LilyClaw can set timers and remind you later — up to 8 concurrent FreeRTOS software timers.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">★</div>
-        <div class="step-content">
-          <h3>HTTP Fetch Tool</h3>
-          <p>LilyClaw can make GET/POST HTTPS requests to external APIs and return the results in conversation.</p>
-        </div>
-      </div>
-      <div class="step">
-        <div class="step-num">★</div>
-        <div class="step-content">
-          <h3>Task Scheduler</h3>
-          <p>Schedule recurring tasks stored in SPIFFS (<code>/spiffs/schedule.json</code>). Use <code>schedule_add</code>, <code>schedule_list</code>, <code>schedule_remove</code> in chat.</p>
+          <h3>Previous: Kimi Multi-Turn Fix &amp; Scheduler (v1.4.6–v1.4.7)</h3>
+          <p>Chat whitelist, <code>/status</code>/<code>/clear</code> commands, timer tool, HTTP fetch tool, task scheduler, and Kimi <code>reasoning_content</code> relay for multi-turn tool calls.</p>
         </div>
       </div>
     </div>
