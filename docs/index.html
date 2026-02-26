@@ -434,7 +434,7 @@ esp-web-install-button button { padding: 16px 40px; font-size: 15px; }
     <div class="logo-glow"><div class="lobster-3d" id="lobster3d" title="Click me!">🦞</div></div>
     <div class="title"><span class="title-grad">LilyClaw</span></div>
     <div class="subtitle">Web Flasher</div>
-    <div style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent2);letter-spacing:1px">Firmware v1.4.0</div>
+    <div style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent2);letter-spacing:1px">Firmware v1.4.6</div>
   </div>
 
   <!-- Flash Card -->
@@ -553,6 +553,48 @@ esp-web-install-button button { padding: 16px 40px; font-size: 15px; }
       <tr><td>Cable</td><td>USB-C (data, not charge-only)</td></tr>
       <tr><td>Accounts</td><td>Telegram Bot + Anthropic API key</td></tr>
     </table>
+  </div>
+
+  <!-- What's new v1.4.6 -->
+  <div class="card">
+    <h2>// what's new in v1.4.6</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">★</div>
+        <div class="step-content">
+          <h3>Chat Whitelist</h3>
+          <p>Only allowed Telegram chat IDs can interact with LilyClaw. Configure via <code>MIMI_SECRET_ALLOWED_CHAT_ID</code>.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">★</div>
+        <div class="step-content">
+          <h3><code>/status</code> &amp; <code>/clear</code> Commands</h3>
+          <p><code>/status</code> returns uptime, free heap, WiFi RSSI, SPIFFS usage and firmware version. <code>/clear</code> resets the current session.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">★</div>
+        <div class="step-content">
+          <h3>Timer Tool</h3>
+          <p>LilyClaw can set timers and remind you later — up to 8 concurrent FreeRTOS software timers.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">★</div>
+        <div class="step-content">
+          <h3>HTTP Fetch Tool</h3>
+          <p>LilyClaw can make GET/POST HTTPS requests to external APIs and return the results in conversation.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">★</div>
+        <div class="step-content">
+          <h3>Task Scheduler</h3>
+          <p>Schedule recurring tasks stored in SPIFFS (<code>/spiffs/schedule.json</code>). Use <code>schedule_add</code>, <code>schedule_list</code>, <code>schedule_remove</code> in chat.</p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="footer">
