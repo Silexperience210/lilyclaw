@@ -1,6 +1,6 @@
 {
   "name": "LilyClaw Full (ecran + HC-SR04 + servos)",
-  "version": "v1.4.7",
+  "version": "v1.4.8",
   "new_install_prompt_erase": true,
   "builds": [
     {
