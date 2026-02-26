@@ -200,9 +200,15 @@ esp_err_t tool_edit_file_execute(const char *input_json, char *output, size_t ou
         return ESP_FAIL;
     }
 
-    fwrite(result, 1, total, f);
+    size_t written = fwrite(result, 1, total, f);
     fclose(f);
     free(result);
+
+    if (written != total) {
+        snprintf(output, output_size, "Error: wrote %d of %d bytes to %s (SPIFFS full?)", (int)written, (int)total, path);
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
 
     snprintf(output, output_size, "OK: edited %s (replaced %d bytes with %d bytes)", path, (int)old_len, (int)new_len);
     ESP_LOGI(TAG, "edit_file: %s", path);

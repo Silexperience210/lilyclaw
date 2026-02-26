@@ -48,8 +48,12 @@ esp_err_t memory_write_long_term(const char *content)
         ESP_LOGE(TAG, "Cannot write %s", MIMI_MEMORY_FILE);
         return ESP_FAIL;
     }
-    fputs(content, f);
+    int ret = fputs(content, f);
     fclose(f);
+    if (ret == EOF) {
+        ESP_LOGE(TAG, "Failed to write long-term memory (SPIFFS full?)");
+        return ESP_FAIL;
+    }
     ESP_LOGI(TAG, "Long-term memory updated (%d bytes)", (int)strlen(content));
     return ESP_OK;
 }

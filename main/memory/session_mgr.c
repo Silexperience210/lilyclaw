@@ -63,7 +63,7 @@ esp_err_t session_get_history_json(const char *chat_id, char *buf, size_t size, 
     }
 
     /* Read all lines into a ring buffer of cJSON objects */
-    cJSON *messages[MIMI_SESSION_MAX_MSGS];
+    cJSON *messages[MIMI_SESSION_MAX_MSGS] = {NULL};
     int count = 0;
     int write_idx = 0;
 
