@@ -18,6 +18,7 @@ import com.github.jvsena42.mandacaru.domain.model.PaymentType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
@@ -129,6 +130,11 @@ class LightningNodeManager(
     private val nodeMutex = Mutex()
     private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    // Background job references — stored so they can be cancelled individually on stop().
+    private var eventLoopJob: Job? = null
+    private var pollingJob: Job? = null
+    private var networkMonitorJob: Job? = null
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     /**
@@ -229,6 +235,15 @@ class LightningNodeManager(
         if (_state.value is LightningNodeState.Idle) return
         _state.value = LightningNodeState.Stopping
 
+        // Cancel background jobs before stopping the node so they don't
+        // race with the shutdown or launch duplicate copies on the next start().
+        eventLoopJob?.cancel()
+        pollingJob?.cancel()
+        networkMonitorJob?.cancel()
+        eventLoopJob = null
+        pollingJob = null
+        networkMonitorJob = null
+
         withContext(Dispatchers.IO) {
             nodeMutex.withLock {
                 try {
@@ -250,7 +265,7 @@ class LightningNodeManager(
     // ── Background jobs ───────────────────────────────────────────────────────
 
     private fun launchEventLoop() {
-        managerScope.launch {
+        eventLoopJob = managerScope.launch {
             while (isActive) {
                 val node = nodeMutex.withLock { ldkNode } ?: break
                 try {
@@ -269,7 +284,7 @@ class LightningNodeManager(
     }
 
     private fun launchPolling() {
-        managerScope.launch {
+        pollingJob = managerScope.launch {
             while (isActive) {
                 delay(POLLING_INTERVAL_MS)
                 try {
@@ -290,7 +305,7 @@ class LightningNodeManager(
      * cached state to reflect any updates.
      */
     private fun launchNetworkMonitor() {
-        managerScope.launch {
+        networkMonitorJob = managerScope.launch {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             callbackFlow {
                 val cb = object : ConnectivityManager.NetworkCallback() {
@@ -323,7 +338,8 @@ class LightningNodeManager(
                 _events.emit(
                     LightningNodeEvent.PaymentSuccessful(
                         paymentId = event.paymentId.toString(),
-                        amountMsat = event.feesPaidMsat,
+                        // amountMsat is not on this event; retrieve from the payments list.
+                        amountMsat = null,
                         feesPaidMsat = event.feesPaidMsat,
                     )
                 )
@@ -419,12 +435,18 @@ class LightningNodeManager(
         withContext(Dispatchers.IO) {
             val snap = node.listBalances()
 
-            // Compute receivable capacity: max single-payment inbound across
-            // all usable channels (limited by the largest inbound capacity).
-            val receivableMsat = node.listChannels()
-                .filter { it.isUsable }
+            // Query channels once; derive both receivable and spendable from the same list.
+            val usableChannels = node.listChannels().filter { it.isUsable }
+
+            // Receivable: max single HTLC inbound (the channel with the most room).
+            val receivableMsat = usableChannels
                 .maxOfOrNull { it.inboundCapacityMsat }
                 ?: 0u
+
+            // Spendable LN: sum of outbound capacity across all usable channels,
+            // excluding reserves and in-flight HTLCs (already reflected in the field).
+            val spendableLnMsat = usableChannels
+                .sumOf { it.outboundCapacityMsat }
 
             // Pending-closing balance: sweep outputs awaiting confirmation.
             val pendingSats = snap.pendingBalancesFromChannelClosures
@@ -443,7 +465,7 @@ class LightningNodeManager(
                 totalOnchainSats = snap.totalOnchainBalanceSats,
                 spendableOnchainSats = snap.spendableOnchainBalanceSats,
                 totalLightningMsat = snap.totalLightningBalanceMsat,
-                spendableLightningMsat = snap.totalLightningBalanceMsat,
+                spendableLightningMsat = spendableLnMsat,
                 receivableLightningMsat = receivableMsat,
                 pendingClosingBalanceSats = pendingSats,
             )
