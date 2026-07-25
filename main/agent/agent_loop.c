@@ -72,7 +72,10 @@ static cJSON *build_tool_results(const llm_response_t *resp, char *tool_output, 
 
         /* Execute tool */
         tool_output[0] = '\0';
-        tool_registry_execute(call->name, call->input, tool_output, tool_output_size);
+        /* input peut etre NULL si le modele a renvoye un bloc tool_use sans
+         * champ "input" : tous les outils font cJSON_Parse(input_json) dessus. */
+        tool_registry_execute(call->name, call->input ? call->input : "{}",
+                              tool_output, tool_output_size);
 
         ESP_LOGI(TAG, "Tool %s result: %d bytes", call->name, (int)strlen(tool_output));
 
@@ -148,10 +151,15 @@ static void agent_loop_task(void *arg)
         /* 4. ReAct loop */
         char *final_text = NULL;
         int iteration = 0;
+        esp_err_t last_error = ESP_OK;
 
         while (iteration < MIMI_AGENT_MAX_TOOL_ITER) {
-            /* Send "working" indicator before each API call */
-            {
+            /* Indicateur "je travaille".
+             * Avant : envoye AVANT CHAQUE appel API, donc jusqu'a 10 messages
+             * Telegram parasites pour une seule question utilisant des outils.
+             * Maintenant : une fois au debut, puis seulement si la boucle
+             * s'eternise (>= 3 tours d'outils). */
+            if (iteration == 0 || iteration == 3 || iteration == 6) {
                 static const char *working_phrases[] = {
                     "LilyClaw\xF0\x9F\x98\x97 is working...",
                     "LilyClaw\xF0\x9F\x90\xBE is thinking...",
@@ -164,10 +172,16 @@ static void agent_loop_task(void *arg)
                 strncpy(status.channel, msg.channel, sizeof(status.channel) - 1);
                 strncpy(status.chat_id, msg.chat_id, sizeof(status.chat_id) - 1);
                 status.content = strdup(working_phrases[esp_random() % phrase_count]);
-                if (status.content) message_bus_push_outbound(&status);
+                /* Le retour de push_outbound etait ignore : file pleine =
+                 * fuite du strdup a chaque fois. */
+                if (status.content && message_bus_push_outbound(&status) != ESP_OK) {
+                    free(status.content);
+                }
             }
 
-            llm_response_t resp;
+            /* resp DOIT etre initialise : llm_chat_tools fait un memset en
+             * entree, mais si un jour il retourne tot on lisait de la pile. */
+            llm_response_t resp = {0};
             for (int retry = 0; retry <= 2; retry++) {
                 if (retry > 0) {
                     ESP_LOGW(TAG, "LLM retry %d/2 after %ds...", retry, retry * 3);
@@ -177,9 +191,15 @@ static void agent_loop_task(void *arg)
                 if (err == ESP_OK) break;
                 ESP_LOGE(TAG, "LLM call failed: %s (attempt %d/3)",
                          esp_err_to_name(err), retry + 1);
+                /* Cle invalide / requete malformee : reessayer 3 fois ne sert
+                 * qu'a perdre 9 secondes et a bruler du quota. */
+                if (err == ESP_ERR_INVALID_STATE) break;
             }
 
-            if (err != ESP_OK) break;
+            if (err != ESP_OK) {
+                last_error = err;
+                break;
+            }
 
             if (!resp.tool_use) {
                 /* Normal completion — save final text and break */
@@ -238,16 +258,32 @@ static void agent_loop_task(void *arg)
             strncpy(out.channel, msg.channel, sizeof(out.channel) - 1);
             strncpy(out.chat_id, msg.chat_id, sizeof(out.chat_id) - 1);
             out.content = final_text;  /* transfer ownership */
-            message_bus_push_outbound(&out);
+            if (message_bus_push_outbound(&out) != ESP_OK) {
+                free(final_text);   /* sinon la reponse fuit quand la file est pleine */
+            }
         } else {
             /* Error or empty response */
             free(final_text);
+
+            /* Avant : toujours "Sorry, I encountered an error." — impossible de
+             * savoir si c'etait la cle, le reseau ou une boucle d'outils. */
+            const char *reason;
+            if (last_error == ESP_ERR_INVALID_STATE) {
+                reason = "Cle API absente ou refusee. Verifie `set_api_key` via la CLI.";
+            } else if (last_error != ESP_OK) {
+                reason = "Le service LLM est injoignable. Reessaie dans un instant.";
+            } else if (iteration >= MIMI_AGENT_MAX_TOOL_ITER) {
+                reason = "J'ai atteint la limite d'outils sans conclure. Reformule ta demande ?";
+            } else {
+                reason = "Reponse vide du modele.";
+            }
+
             mimi_msg_t out = {0};
             strncpy(out.channel, msg.channel, sizeof(out.channel) - 1);
             strncpy(out.chat_id, msg.chat_id, sizeof(out.chat_id) - 1);
-            out.content = strdup("Sorry, I encountered an error.");
-            if (out.content) {
-                message_bus_push_outbound(&out);
+            out.content = strdup(reason);
+            if (out.content && message_bus_push_outbound(&out) != ESP_OK) {
+                free(out.content);
             }
 #ifdef MIMI_HAS_DISPLAY
             display_ui_set_state(DISPLAY_IDLE);

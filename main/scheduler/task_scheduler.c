@@ -1,4 +1,5 @@
 #include "task_scheduler.h"
+#include "util/safe_str.h"
 #include "bus/message_bus.h"
 #include "mimi_config.h"
 
@@ -199,8 +200,30 @@ esp_err_t tool_schedule_add_execute(const char *input_json, char *output, size_t
         }
     }
 
+    /* Sans chat_id courant, la tache se declenchera dans le vide : mieux vaut
+     * le dire tout de suite que de laisser l'utilisateur attendre 24 h. */
+    if (s_current_chat_id[0] == '\0') {
+        cJSON_Delete(arr);
+        cJSON_Delete(root);
+        snprintf(output, output_size,
+                 "Error: aucun chat actif, impossible de rattacher la tache planifiee.");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     time_t now = time(NULL);
     time_t next_run = (now > SCHED_MIN_TIME_T) ? now + interval_s : 0;
+
+    /* MIMI_SCHEDULER_MAX_TASKS etait defini mais jamais applique : le fichier
+     * pouvait grossir jusqu'a etre rejete par sched_load() (limite 8 Ko),
+     * effacant silencieusement TOUTES les taches. */
+    if (cJSON_GetArraySize(arr) >= MIMI_SCHEDULER_MAX_TASKS) {
+        cJSON_Delete(arr);
+        cJSON_Delete(root);
+        snprintf(output, output_size,
+                 "Error: limite de %d taches planifiees atteinte, supprime-en une d'abord.",
+                 MIMI_SCHEDULER_MAX_TASKS);
+        return ESP_ERR_NO_MEM;
+    }
 
     cJSON *entry = cJSON_CreateObject();
     cJSON_AddStringToObject(entry, "id",         id_j->valuestring);
@@ -244,9 +267,9 @@ esp_err_t tool_schedule_list_execute(const char *input_json, char *output, size_
     }
 
     time_t now = time(NULL);
-    size_t off = 0;
-    off += snprintf(output + off, output_size - off,
-                    "%d scheduled task(s):\n", count);
+    str_builder_t sb;
+    sb_init(&sb, output, output_size);
+    sb_printf(&sb, "%d scheduled task(s):\n", count);
 
     int i = 0;
     cJSON *entry;
@@ -267,22 +290,21 @@ esp_err_t tool_schedule_list_execute(const char *input_json, char *output, size_
         if (next_j && cJSON_IsNumber(next_j) && now > SCHED_MIN_TIME_T) {
             time_t next = (time_t)next_j->valuedouble;
             if (next == 0) {
-                strncpy(next_str, "pending sync", sizeof(next_str));
+                snprintf(next_str, sizeof(next_str), "pending sync");
             } else if (next > now) {
                 int64_t diff = (int64_t)(next - now);
                 snprintf(next_str, sizeof(next_str), "in %dh%dm",
                          (int)(diff / 3600), (int)((diff % 3600) / 60));
             } else {
-                strncpy(next_str, "soon", sizeof(next_str));
+                snprintf(next_str, sizeof(next_str), "soon");
             }
         }
 
-        off += snprintf(output + off, output_size - off,
-                        "%d. [%s] \"%s\" — every %.1fh, next: %s — prompt: %s\n",
-                        i + 1, enabled ? "ON" : "OFF", id,
-                        interval_h, next_str, prompt);
+        sb_printf(&sb, "%d. [%s] \"%s\" — every %.1fh, next: %s — prompt: %s\n",
+                  i + 1, enabled ? "ON" : "OFF", id,
+                  interval_h, next_str, prompt);
         i++;
-        if (off >= output_size - 64) break;
+        if (sb.full) break;
     }
 
     cJSON_Delete(arr);
