@@ -1,6 +1,7 @@
 #include "llm_proxy.h"
 #include "mimi_config.h"
 #include "proxy/http_proxy.h"
+#include "util/http_raw.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -63,7 +64,12 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
     resp_buf_t *rb = (resp_buf_t *)evt->user_data;
     if (evt->event_id == HTTP_EVENT_ON_DATA) {
-        resp_buf_append(rb, (const char *)evt->data, evt->data_len);
+        /* Le retour etait ignore : en cas d'OOM la reponse etait tronquee
+         * silencieusement et on tombait sur "Failed to parse response". */
+        if (resp_buf_append(rb, (const char *)evt->data, evt->data_len) != ESP_OK) {
+            ESP_LOGE(TAG, "Buffer reponse sature (%d octets), abandon", (int)rb->len);
+            return ESP_ERR_NO_MEM;
+        }
     }
     return ESP_OK;
 }
@@ -220,6 +226,16 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
             path, host, s_api_key, MIMI_LLM_API_VERSION, body_len);
     }
 
+    /* snprintf renvoie la longueur QU'IL AURAIT ecrite. Si la cle d'API est
+     * longue, hlen > sizeof(header) et proxy_conn_write lisait au-dela du
+     * buffer sur la pile. On borne. */
+    if (hlen < 0) { proxy_conn_close(conn); return ESP_ERR_INVALID_SIZE; }
+    if ((size_t)hlen >= sizeof(header)) {
+        ESP_LOGE(TAG, "En-tete HTTP tronque (%d octets), abandon", hlen);
+        proxy_conn_close(conn);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     if (proxy_conn_write(conn, header, hlen) < 0 ||
         proxy_conn_write(conn, post_data, body_len) < 0) {
         proxy_conn_close(conn);
@@ -236,21 +252,17 @@ static esp_err_t llm_http_via_proxy(const char *post_data, resp_buf_t *rb, int *
     proxy_conn_close(conn);
 
     /* Parser la ligne de statut HTTP */
-    *out_status = 0;
-    if (rb->len > 5 && strncmp(rb->data, "HTTP/", 5) == 0) {
-        const char *sp = strchr(rb->data, ' ');
-        if (sp) *out_status = atoi(sp + 1);
-    }
+    *out_status = http_raw_status(rb->data, rb->len);
 
-    /* Retirer les headers HTTP, garder le body */
-    char *body = strstr(rb->data, "\r\n\r\n");
-    if (body) {
-        body += 4;
-        size_t blen = rb->len - (body - rb->data);
-        memmove(rb->data, body, blen);
-        rb->len = blen;
-        rb->data[rb->len] = '\0';
+    /* Retirer les en-tetes ET decoder le Transfer-Encoding: chunked.
+     * Sans le decodage, le corps contient les marqueurs de taille hex et
+     * cJSON_Parse echoue de facon aleatoire sur les grosses reponses. */
+    size_t blen = 0;
+    if (!http_raw_extract_body(rb->data, rb->len, &blen)) {
+        ESP_LOGE(TAG, "Reponse HTTP malformee (pas d'en-tetes)");
+        return ESP_FAIL;
     }
+    rb->len = blen;
 
     return ESP_OK;
 }
@@ -278,7 +290,7 @@ static void extract_text_anthropic(cJSON *root, char *buf, size_t size)
     cJSON *block;
     cJSON_ArrayForEach(block, content) {
         cJSON *btype = cJSON_GetObjectItem(block, "type");
-        if (!btype || strcmp(btype->valuestring, "text") != 0) continue;
+        if (!cJSON_IsString(btype) || strcmp(btype->valuestring, "text") != 0) continue;
         cJSON *text = cJSON_GetObjectItem(block, "text");
         if (!text || !cJSON_IsString(text)) continue;
         size_t tlen = strlen(text->valuestring);
@@ -344,7 +356,7 @@ static cJSON *translate_messages_to_openai(const char *system_prompt, cJSON *mes
                 cJSON *block;
                 cJSON_ArrayForEach(block, content) {
                     cJSON *btype = cJSON_GetObjectItem(block, "type");
-                    if (!btype || strcmp(btype->valuestring, "tool_result") != 0) continue;
+                    if (!cJSON_IsString(btype) || strcmp(btype->valuestring, "tool_result") != 0) continue;
 
                     cJSON *tool_id = cJSON_GetObjectItem(block, "tool_use_id");
                     cJSON *result = cJSON_GetObjectItem(block, "content");
@@ -380,7 +392,7 @@ static cJSON *translate_messages_to_openai(const char *system_prompt, cJSON *mes
                 cJSON *block;
                 cJSON_ArrayForEach(block, content) {
                     cJSON *btype = cJSON_GetObjectItem(block, "type");
-                    if (!btype) continue;
+                    if (!cJSON_IsString(btype)) continue;
 
                     if (strcmp(btype->valuestring, "text") == 0) {
                         cJSON *t = cJSON_GetObjectItem(block, "text");
@@ -452,8 +464,8 @@ static char *translate_tools_to_openai(const char *anthropic_tools_json)
         cJSON *desc = cJSON_GetObjectItem(tool, "description");
         cJSON *schema = cJSON_GetObjectItem(tool, "input_schema");
 
-        if (name) cJSON_AddStringToObject(func, "name", name->valuestring);
-        if (desc) cJSON_AddStringToObject(func, "description", desc->valuestring);
+        if (cJSON_IsString(name)) cJSON_AddStringToObject(func, "name", name->valuestring);
+        if (cJSON_IsString(desc)) cJSON_AddStringToObject(func, "description", desc->valuestring);
         if (schema) cJSON_AddItemToObject(func, "parameters", cJSON_Duplicate(schema, 1));
 
         cJSON_AddItemToObject(oai_tool, "function", func);
@@ -697,6 +709,13 @@ esp_err_t llm_chat_tools(const char *system_prompt,
         cJSON_AddStringToObject(body, "system", system_prompt);
 
         cJSON *msgs_copy = cJSON_Duplicate(messages, 1);
+        /* `_kimi_reasoning` est un champ interne ajoute par agent_loop pour le
+         * relais Kimi. L'API Anthropic rejette les champs inconnus (400) si on
+         * change de fournisseur en cours de conversation. */
+        cJSON *m;
+        cJSON_ArrayForEach(m, msgs_copy) {
+            cJSON_DeleteItemFromObject(m, "_kimi_reasoning");
+        }
         cJSON_AddItemToObject(body, "messages", msgs_copy);
 
         if (tools_json) {
@@ -734,6 +753,11 @@ esp_err_t llm_chat_tools(const char *system_prompt,
     if (status != 200) {
         ESP_LOGE(TAG, "API error %d: %.500s", status, rb.data ? rb.data : "");
         resp_buf_free(&rb);
+        /* 401/403 = cle invalide : inutile de reessayer, l'agent boucle 3x
+         * pour rien. 429/5xx = transitoire, on laisse le retry jouer. */
+        if (status == 401 || status == 403 || status == 400) {
+            return ESP_ERR_INVALID_STATE;
+        }
         return ESP_FAIL;
     }
 
@@ -763,7 +787,7 @@ esp_err_t llm_chat_tools(const char *system_prompt,
             cJSON *block;
             cJSON_ArrayForEach(block, content) {
                 cJSON *btype = cJSON_GetObjectItem(block, "type");
-                if (btype && strcmp(btype->valuestring, "text") == 0) {
+                if (cJSON_IsString(btype) && strcmp(btype->valuestring, "text") == 0) {
                     cJSON *text = cJSON_GetObjectItem(block, "text");
                     if (text && cJSON_IsString(text))
                         total_text += strlen(text->valuestring);
@@ -776,7 +800,7 @@ esp_err_t llm_chat_tools(const char *system_prompt,
                 if (resp->text) {
                     cJSON_ArrayForEach(block, content) {
                         cJSON *btype = cJSON_GetObjectItem(block, "type");
-                        if (!btype || strcmp(btype->valuestring, "text") != 0) continue;
+                        if (!cJSON_IsString(btype) || strcmp(btype->valuestring, "text") != 0) continue;
                         cJSON *text = cJSON_GetObjectItem(block, "text");
                         if (!text || !cJSON_IsString(text)) continue;
                         size_t tlen = strlen(text->valuestring);
@@ -790,7 +814,7 @@ esp_err_t llm_chat_tools(const char *system_prompt,
             /* Extraire les blocs tool_use */
             cJSON_ArrayForEach(block, content) {
                 cJSON *btype = cJSON_GetObjectItem(block, "type");
-                if (!btype || strcmp(btype->valuestring, "tool_use") != 0) continue;
+                if (!cJSON_IsString(btype) || strcmp(btype->valuestring, "tool_use") != 0) continue;
                 if (resp->call_count >= MIMI_MAX_TOOL_CALLS) break;
 
                 llm_tool_call_t *call = &resp->calls[resp->call_count];

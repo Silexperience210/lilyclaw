@@ -86,6 +86,13 @@
 #define MIMI_CONTEXT_BUF_SIZE        (16 * 1024)
 #define MIMI_SESSION_MAX_MSGS        20
 
+/* session_get_history_json() alloue un tableau de MIMI_SESSION_MAX_MSGS
+ * entrees mais recoit MIMI_AGENT_MAX_HISTORY en parametre. Si quelqu'un
+ * augmente l'un sans l'autre, on ecrit hors du tableau -> corruption de pile.
+ * L'assertion casse la compilation au lieu du firmware. */
+_Static_assert(MIMI_AGENT_MAX_HISTORY <= MIMI_SESSION_MAX_MSGS,
+               "MIMI_AGENT_MAX_HISTORY doit rester <= MIMI_SESSION_MAX_MSGS");
+
 /* WebSocket Gateway */
 #define MIMI_WS_PORT                 18789
 #define MIMI_WS_MAX_CLIENTS          4
@@ -202,7 +209,7 @@
 #define MIMI_SCHEDULER_STACK         (6 * 1024)
 
 /* Firmware Version */
-#define MIMI_FW_VERSION          "1.4.9"
+#define MIMI_FW_VERSION          "1.5.0"
 #define MIMI_GITHUB_RELEASES_URL "https://api.github.com/repos/Silexperience210/lilyclaw/releases/latest"
 #define MIMI_OTA_STACK           (8 * 1024)
 

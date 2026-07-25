@@ -1,6 +1,8 @@
 #include "tool_web_search.h"
 #include "mimi_config.h"
 #include "proxy/http_proxy.h"
+#include "util/http_raw.h"
+#include "util/safe_str.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -108,7 +110,8 @@ static void format_results(cJSON *root, char *output, size_t output_size)
         return;
     }
 
-    size_t off = 0;
+    str_builder_t sb;
+    sb_init(&sb, output, output_size);
     int idx = 0;
     cJSON *item;
     cJSON_ArrayForEach(item, results) {
@@ -118,14 +121,13 @@ static void format_results(cJSON *root, char *output, size_t output_size)
         cJSON *url = cJSON_GetObjectItem(item, "url");
         cJSON *desc = cJSON_GetObjectItem(item, "description");
 
-        off += snprintf(output + off, output_size - off,
-            "%d. %s\n   %s\n   %s\n\n",
+        sb_printf(&sb, "%d. %s\n   %s\n   %s\n\n",
             idx + 1,
-            (title && cJSON_IsString(title)) ? title->valuestring : "(no title)",
-            (url && cJSON_IsString(url)) ? url->valuestring : "",
-            (desc && cJSON_IsString(desc)) ? desc->valuestring : "");
+            cJSON_IsString(title) ? title->valuestring : "(no title)",
+            cJSON_IsString(url)   ? url->valuestring   : "",
+            cJSON_IsString(desc)  ? desc->valuestring  : "");
 
-        if (off >= output_size - 1) break;
+        if (sb.full) break;
         idx++;
     }
 }
@@ -177,6 +179,12 @@ static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
         "Connection: close\r\n\r\n",
         path, s_search_key);
 
+    if (hlen < 0 || (size_t)hlen >= sizeof(header)) {
+        ESP_LOGE(TAG, "En-tete tronque (%d octets)", hlen);
+        proxy_conn_close(conn);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     if (proxy_conn_write(conn, header, hlen) < 0) {
         proxy_conn_close(conn);
         return ESP_ERR_HTTP_WRITE_DATA;
@@ -199,20 +207,12 @@ static esp_err_t search_via_proxy(const char *path, search_buf_t *sb)
     proxy_conn_close(conn);
 
     /* Check status */
-    int status = 0;
-    if (total > 5 && strncmp(sb->data, "HTTP/", 5) == 0) {
-        const char *sp = strchr(sb->data, ' ');
-        if (sp) status = atoi(sp + 1);
-    }
+    int status = http_raw_status(sb->data, total);
 
-    /* Strip headers */
-    char *body = strstr(sb->data, "\r\n\r\n");
-    if (body) {
-        body += 4;
-        size_t blen = total - (body - sb->data);
-        memmove(sb->data, body, blen);
+    /* Retire les en-tetes + decode le chunked (Brave repond en chunked). */
+    size_t blen = 0;
+    if (http_raw_extract_body(sb->data, total, &blen)) {
         sb->len = blen;
-        sb->data[sb->len] = '\0';
     }
 
     if (status != 200) {

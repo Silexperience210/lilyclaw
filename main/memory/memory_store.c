@@ -1,10 +1,12 @@
 #include "memory_store.h"
 #include "mimi_config.h"
+#include "util/safe_str.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <stdbool.h>
 #include "esp_log.h"
 
 static const char *TAG = "memory";
@@ -66,28 +68,39 @@ esp_err_t memory_append_today(const char *note)
     char path[64];
     snprintf(path, sizeof(path), "%s/%s.md", MIMI_SPIFFS_MEMORY_DIR, date_str);
 
+    /* fopen("a") cree deja le fichier s'il n'existe pas : l'ancienne branche
+     * de repli en "w" (avec l'en-tete de date) etait donc du code mort et
+     * l'en-tete n'etait jamais ecrit. On teste explicitement l'existence. */
+    bool is_new = false;
+    FILE *probe = fopen(path, "r");
+    if (!probe) is_new = true; else fclose(probe);
+
     FILE *f = fopen(path, "a");
     if (!f) {
-        /* Try creating — if file doesn't exist yet, write header */
-        f = fopen(path, "w");
-        if (!f) {
-            ESP_LOGE(TAG, "Cannot open %s", path);
-            return ESP_FAIL;
-        }
-        fprintf(f, "# %s\n\n", date_str);
+        ESP_LOGE(TAG, "Cannot open %s", path);
+        return ESP_FAIL;
     }
 
-    fprintf(f, "%s\n", note);
+    if (is_new) fprintf(f, "# %s\n\n", date_str);
+
+    int ret = fprintf(f, "%s\n", note);
     fclose(f);
+
+    if (ret < 0) {
+        ESP_LOGE(TAG, "Ecriture de la note echouee (SPIFFS plein ?)");
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }
 
 esp_err_t memory_read_recent(char *buf, size_t size, int days)
 {
-    size_t offset = 0;
-    buf[0] = '\0';
+    /* Meme piege que context_builder : `size - offset - 1` deborde en size_t
+     * des que offset atteint size, et fread ecrasait tout le tas. */
+    str_builder_t sb;
+    sb_init(&sb, buf, size);
 
-    for (int i = 0; i < days && offset < size - 1; i++) {
+    for (int i = 0; i < days && !sb.full; i++) {
         char date_str[16];
         get_date_str(date_str, sizeof(date_str), i);
 
@@ -97,13 +110,8 @@ esp_err_t memory_read_recent(char *buf, size_t size, int days)
         FILE *f = fopen(path, "r");
         if (!f) continue;
 
-        if (offset > 0 && offset < size - 4) {
-            offset += snprintf(buf + offset, size - offset, "\n---\n");
-        }
-
-        size_t n = fread(buf + offset, 1, size - offset - 1, f);
-        offset += n;
-        buf[offset] = '\0';
+        if (sb.off > 0) sb_append(&sb, "\n---\n");
+        sb_append_stream(&sb, f);
         fclose(f);
     }
 

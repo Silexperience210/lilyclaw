@@ -1,4 +1,5 @@
 #include "body_animator.h"
+#include "util/safe_str.h"
 #include "hardware/servo_driver.h"
 #include "hardware/ultrasonic.h"
 #include "hardware/sonar_radar.h"
@@ -1051,9 +1052,13 @@ gesture_t body_animator_get_last_gesture(void)
 
 void body_animator_build_perception(char *buf, size_t size)
 {
-    size_t off = 0;
+    /* Anciennement une chaine de 10+ `off += snprintf(buf+off, size-off, ...)`
+     * sans aucun controle de borne : la premiere troncature rendait
+     * `size - off` gigantesque et le snprintf suivant ecrasait le tas. */
+    str_builder_t sb;
+    sb_init(&sb, buf, size);
 
-    off += snprintf(buf + off, size - off, "[PERCEPTION]\n");
+    sb_append(&sb, "[PERCEPTION]\n");
 
     /* Distance et presence */
     if (s_last_distance > 0) {
@@ -1063,30 +1068,28 @@ void body_animator_build_perception(char *buf, size_t size)
         else if (s_last_distance < MIMI_US_DETECT_CM) prox = "detecte au loin";
         else prox = "hors portee";
 
-        off += snprintf(buf + off, size - off,
-                        "Presence: %s (%dcm)", prox, s_last_distance);
+        sb_printf(&sb, "Presence: %s (%dcm)", prox, s_last_distance);
 
         /* Objet en mouvement ? */
         if (is_object_moving()) {
-            off += snprintf(buf + off, size - off, ", en mouvement");
+            sb_append(&sb, ", en mouvement");
         }
-        off += snprintf(buf + off, size - off, "\n");
+        sb_append(&sb, "\n");
     } else {
-        off += snprintf(buf + off, size - off, "Presence: personne detecte\n");
+        sb_append(&sb, "Presence: personne detecte\n");
     }
 
     /* Dernier geste */
     if (s_last_gesture != GESTURE_NONE) {
-        off += snprintf(buf + off, size - off, "Dernier geste: %s\n",
-                        gesture_detect_name(s_last_gesture));
+        sb_printf(&sb, "Dernier geste: %s\n", gesture_detect_name(s_last_gesture));
     }
 
     /* Position servos */
-    off += snprintf(buf + off, size - off, "Tete: H=%d V=%d | Pinces: L=%d R=%d\n",
-                    servo_get_angle(SERVO_HEAD_H),
-                    servo_get_angle(SERVO_HEAD_V),
-                    servo_get_angle(SERVO_CLAW_L),
-                    servo_get_angle(SERVO_CLAW_R));
+    sb_printf(&sb, "Tete: H=%d V=%d | Pinces: L=%d R=%d\n",
+              servo_get_angle(SERVO_HEAD_H),
+              servo_get_angle(SERVO_HEAD_V),
+              servo_get_angle(SERVO_CLAW_L),
+              servo_get_angle(SERVO_CLAW_R));
 
     /* Humeur */
     const char *mood_str;
@@ -1098,13 +1101,13 @@ void body_animator_build_perception(char *buf, size_t size)
     case MOOD_PROUD:   mood_str = "proud"; break;
     default:           mood_str = "neutral"; break;
     }
-    off += snprintf(buf + off, size - off, "Humeur: %s\n", mood_str);
+    sb_printf(&sb, "Humeur: %s\n", mood_str);
 
     /* Radar */
     if (sonar_radar_get_mode() != RADAR_OFF) {
         char radar_buf[200];
         sonar_radar_build_perception(radar_buf, sizeof(radar_buf));
-        off += snprintf(buf + off, size - off, "%s\n", radar_buf);
+        sb_printf(&sb, "%s\n", radar_buf);
     }
 
     /* Etat affichage */
@@ -1118,5 +1121,5 @@ void body_animator_build_perception(char *buf, size_t size)
     case DISPLAY_SCREENSAVER:  disp_str = "screensaver"; break;
     default:                   disp_str = "other"; break;
     }
-    off += snprintf(buf + off, size - off, "Ecran: %s\n", disp_str);
+    sb_printf(&sb, "Ecran: %s\n", disp_str);
 }

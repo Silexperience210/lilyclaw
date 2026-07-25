@@ -9,6 +9,7 @@
 #include "tools/tool_web_search.h"
 #include "portal/captive_portal.h"
 #include "ota/ota_manager.h"
+#include "gateway/ws_server.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -21,6 +22,21 @@
 #include "argtable3/argtable3.h"
 
 static const char *TAG = "cli";
+
+/* --- ws_token command --- */
+
+static int cmd_ws_token(int argc, char **argv)
+{
+    (void)argc; (void)argv;
+    const char *tok = ws_server_get_token();
+    if (tok && tok[0]) {
+        printf("Jeton WebSocket : %s\n", tok);
+        printf("Handshake client : {\"type\":\"auth\",\"token\":\"%s\"}\n", tok);
+    } else {
+        printf("Jeton non encore genere (le serveur WebSocket demarre avec le WiFi).\n");
+    }
+    return 0;
+}
 
 /* --- wifi_set command --- */
 static struct {
@@ -515,6 +531,14 @@ esp_err_t serial_cli_init(void)
         .argtable = &session_clear_args,
     };
     esp_console_cmd_register(&sess_clear_cmd);
+
+    /* ws_token */
+    esp_console_cmd_t ws_token_cmd = {
+        .command = "ws_token",
+        .help = "Show the WebSocket authentication token",
+        .func = &cmd_ws_token,
+    };
+    esp_console_cmd_register(&ws_token_cmd);
 
     /* heap_info */
     esp_console_cmd_t heap_cmd = {

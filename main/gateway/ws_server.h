@@ -23,3 +23,11 @@ esp_err_t ws_server_send(const char *chat_id, const char *text);
  * Stop the WebSocket server.
  */
 esp_err_t ws_server_stop(void);
+
+/**
+ * Jeton d'authentification WebSocket (32 caracteres, genere au premier
+ * demarrage et persiste en NVS). Les clients doivent envoyer
+ *   {"type":"auth","token":"<jeton>"}
+ * avant tout message.
+ */
+const char *ws_server_get_token(void);

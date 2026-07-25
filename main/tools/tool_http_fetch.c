@@ -2,7 +2,10 @@
 #include "mimi_config.h"
 
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -10,6 +13,67 @@
 #include "cJSON.h"
 
 static const char *TAG = "http_fetch";
+
+/*
+ * Garde-fou SSRF.
+ *
+ * PROBLEME CORRIGE : http_fetch acceptait n'importe quelle URL. Le LLM (ou
+ * quiconque peut lui envoyer un message) pouvait donc atteindre le reseau
+ * local : routeur (http://192.168.1.1), Home Assistant sans auth, imprimantes,
+ * le portail captif de LilyClaw lui-meme, ou 127.0.0.1. Une seule phrase
+ * injectee dans une page web lue par l'agent suffisait a declencher ca.
+ *
+ * On refuse par defaut les plages privees ; MIMI_HTTP_FETCH_ALLOW_LAN=1 (dans
+ * mimi_secrets.h) reactive l'ancien comportement pour ceux qui pilotent
+ * volontairement des services locaux.
+ */
+#ifndef MIMI_HTTP_FETCH_ALLOW_LAN
+#define MIMI_HTTP_FETCH_ALLOW_LAN 0
+#endif
+
+static bool url_host_is_private(const char *url)
+{
+    const char *h = strstr(url, "://");
+    h = h ? h + 3 : url;
+
+    /* Saute d'eventuels identifiants user:pass@ */
+    const char *at = strchr(h, '@');
+    const char *slash = strchr(h, '/');
+    if (at && (!slash || at < slash)) h = at + 1;
+
+    char host[128];
+    size_t i = 0;
+
+    if (*h == '[') {
+        /* Forme IPv6 entre crochets : http://[::1]:8080/ */
+        h++;
+        while (h[i] && h[i] != ']' && i < sizeof(host) - 1) { host[i] = h[i]; i++; }
+    } else {
+        while (h[i] && h[i] != '/' && h[i] != ':' && h[i] != '?' && i < sizeof(host) - 1) {
+            host[i] = h[i];
+            i++;
+        }
+    }
+    host[i] = '\0';
+
+    if (strcasecmp(host, "localhost") == 0) return true;
+    if (strcasecmp(host, "metadata.google.internal") == 0) return true;
+
+    unsigned a, b, c, d;
+    if (sscanf(host, "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+        if (a == 10)                          return true;   /* 10.0.0.0/8      */
+        if (a == 127)                         return true;   /* loopback        */
+        if (a == 172 && b >= 16 && b <= 31)   return true;   /* 172.16.0.0/12   */
+        if (a == 192 && b == 168)             return true;   /* 192.168.0.0/16  */
+        if (a == 169 && b == 254)             return true;   /* link-local      */
+        if (a == 0)                           return true;
+    }
+
+    /* IPv6 loopback / unique-local */
+    if (strcmp(host, "::1") == 0 || strncasecmp(host, "fd", 2) == 0) return true;
+
+    return false;
+}
 
 typedef struct {
     char *data;
@@ -77,6 +141,26 @@ esp_err_t tool_http_fetch_execute(const char *input_json, char *output, size_t o
         if (max_bytes < 256) max_bytes = 256;
     }
 
+    /* Seuls http/https sont pertinents ; "file://" serait servi par
+     * esp_http_client comme une erreur, mais autant etre explicite. */
+    if (strncasecmp(url_j->valuestring, "http://", 7) != 0 &&
+        strncasecmp(url_j->valuestring, "https://", 8) != 0) {
+        cJSON_Delete(root);
+        snprintf(output, output_size, "Error: seuls les schemes http:// et https:// sont autorises");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+#if !MIMI_HTTP_FETCH_ALLOW_LAN
+    if (url_host_is_private(url_j->valuestring)) {
+        ESP_LOGW(TAG, "SSRF bloque: %s", url_j->valuestring);
+        cJSON_Delete(root);
+        snprintf(output, output_size,
+                 "Error: acces refuse aux adresses du reseau local/loopback. "
+                 "Definis MIMI_HTTP_FETCH_ALLOW_LAN=1 dans mimi_secrets.h pour l'autoriser.");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+#endif
+
     ESP_LOGI(TAG, "%s %s (max %d bytes)", method_str, url_j->valuestring, (int)max_bytes);
 
     fetch_buf_t fb = {
@@ -131,8 +215,10 @@ esp_err_t tool_http_fetch_execute(const char *input_json, char *output, size_t o
     ESP_LOGI(TAG, "Fetched %d bytes, status=%d%s", (int)fb.len, status,
              truncated ? " [truncated]" : "");
 
-    if (fb.data && fb.len > 0) {
-        size_t copy = fb.len < output_size - 64 ? fb.len : output_size - 64;
+    if (fb.data && fb.len > 0 && output_size > 80) {
+        /* output_size - 64 debordait si un appelant passait un petit buffer */
+        size_t room = output_size - 64;
+        size_t copy = fb.len < room ? fb.len : room;
         memcpy(output, fb.data, copy);
         output[copy] = '\0';
         if (truncated) {
