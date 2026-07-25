@@ -48,16 +48,59 @@ jobs:
           SDKCONFIG_EXTRA: ${{ matrix.sdkconfig_extra }}
         run: |
           . $IDF_PATH/export.sh
-          idf.py set-target esp32s3
 
+          # ATTENTION A L'ORDRE.
+          # `idf.py set-target` genere sdkconfig a partir de sdkconfig.defaults*
+          # et NE LE REGENERE PLUS ensuite. Ajouter les options APRES set-target
+          # (comme on le faisait) n'avait donc aucun effet : les variantes
+          # display et full etaient en realite des builds base, sans ecran ni
+          # servos. On ecrit les options AVANT, dans le fichier specifique au
+          # target (lu en dernier, donc prioritaire).
           if [ -n "$SDKCONFIG_EXTRA" ]; then
-            printf '%b\n' "$SDKCONFIG_EXTRA" >> sdkconfig.defaults
+            printf '%b\n' "$SDKCONFIG_EXTRA" >> sdkconfig.defaults.esp32s3
           fi
 
-          # -Werror sur les classes de defauts que l'audit a trouvees en
-          # nombre : troncature snprintf, deref potentiels, comparaisons
-          # signed/unsigned dans les calculs de taille.
+          rm -f sdkconfig
+          idf.py set-target esp32s3
           idf.py build
+
+      - name: Verifier que la variante est bien celle attendue
+        shell: bash
+        env:
+          SDKCONFIG_EXTRA: ${{ matrix.sdkconfig_extra }}
+        run: |
+          # Sans ce garde-fou, une regression de l'ordre ci-dessus republie
+          # silencieusement trois fois le meme firmware.
+          fail=0
+
+          expect_sym() {   # $1 = symbole, $2 = doit-etre-present (0/1)
+            if grep -q "$1" build/*.map; then found=1; else found=0; fi
+            if [ "$found" != "$2" ]; then
+              echo "ERREUR: symbole '$1' present=$found, attendu=$2"
+              fail=1
+            fi
+          }
+
+          case "$SDKCONFIG_EXTRA" in
+            *MIMI_HAS_SERVOS*)
+              grep -q '^CONFIG_MIMI_HAS_DISPLAY=y' sdkconfig || { echo "ERREUR: DISPLAY absent de sdkconfig"; fail=1; }
+              grep -q '^CONFIG_MIMI_HAS_SERVOS=y'  sdkconfig || { echo "ERREUR: SERVOS absent de sdkconfig";  fail=1; }
+              expect_sym display_ui_init 1
+              expect_sym body_animator_init 1
+              ;;
+            *MIMI_HAS_DISPLAY*)
+              grep -q '^CONFIG_MIMI_HAS_DISPLAY=y' sdkconfig || { echo "ERREUR: DISPLAY absent de sdkconfig"; fail=1; }
+              expect_sym display_ui_init 1
+              expect_sym body_animator_init 0
+              ;;
+            *)
+              expect_sym display_ui_init 0
+              expect_sym body_animator_init 0
+              ;;
+          esac
+
+          [ "$fail" = "0" ] && echo "OK: variante conforme"
+          exit $fail
 
       - name: Report binary size
         shell: bash
