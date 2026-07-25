@@ -1,5 +1,7 @@
 #include "telegram_bot.h"
 #include "mimi_config.h"
+#include "util/http_raw.h"
+#include "util/safe_str.h"
 #include "bus/message_bus.h"
 #include "proxy/http_proxy.h"
 #include "ota/ota_manager.h"
@@ -12,6 +14,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <inttypes.h>   /* PRId64 : etait tire par transitivite seulement */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -81,8 +84,16 @@ static uint64_t fnv1a64(const char *s)
 
 static uint64_t make_msg_key(const char *chat_id, int msg_id)
 {
+    /* Avant : `h << 16` jetait les 16 bits de poids fort du hash et le
+     * msg_id etait melange deux fois -> collisions -> messages legitimes
+     * silencieusement classes "doublon". On mixe le msg_id dans le FNV. */
     uint64_t h = fnv1a64(chat_id);
-    return (h << 16) ^ (uint64_t)(msg_id & 0xFFFF) ^ ((uint64_t)msg_id << 32);
+    uint32_t id = (uint32_t)msg_id;
+    for (int i = 0; i < 4; i++) {
+        h ^= (uint64_t)((id >> (i * 8)) & 0xFF);
+        h *= 1099511628211ULL;
+    }
+    return h ? h : 1;   /* 0 == slot vide dans le cache, on l'evite */
 }
 
 static bool seen_msg_contains(uint64_t key)
@@ -182,6 +193,13 @@ static char *tg_api_call_via_proxy(const char *path, const char *post_data)
             s_bot_token, path);
     }
 
+    if (hlen < 0 || (size_t)hlen >= sizeof(header)) {
+        /* snprintf a tronque -> hlen depasse le buffer -> lecture hors pile */
+        ESP_LOGE(TAG, "En-tete Telegram tronque (%d octets)", hlen);
+        proxy_conn_close(conn);
+        return NULL;
+    }
+
     if (proxy_conn_write(conn, header, hlen) < 0) {
         proxy_conn_close(conn);
         return NULL;
@@ -211,13 +229,13 @@ static char *tg_api_call_via_proxy(const char *path, const char *post_data)
     buf[len] = '\0';
     proxy_conn_close(conn);
 
-    /* Skip HTTP headers — find \r\n\r\n */
-    char *body = strstr(buf, "\r\n\r\n");
-    if (!body) { free(buf); return NULL; }
-    body += 4;
+    /* Retire les en-tetes ET decode le chunked. api.telegram.org repond en
+     * Transfer-Encoding: chunked sur getUpdates : sans decodage, le JSON
+     * contenait les marqueurs de taille et process_updates() ne parsait rien. */
+    size_t blen = 0;
+    if (!http_raw_extract_body(buf, len, &blen)) { free(buf); return NULL; }
 
-    /* Return just the body */
-    char *result = strdup(body);
+    char *result = strdup(buf);
     free(buf);
     return result;
 }
@@ -280,19 +298,28 @@ static char *tg_api_call(const char *method, const char *post_data)
 
 /* ── Response checker (extracts error description) ──────────── */
 
-static bool tg_response_is_ok(const char *resp, const char **out_desc)
+/*
+ * BUG CORRIGE (use-after-free) : l'ancienne signature etait
+ *   tg_response_is_ok(const char *resp, const char **out_desc)
+ * et faisait `*out_desc = desc->valuestring;` AVANT `cJSON_Delete(root)`.
+ * Le pointeur rendu a l'appelant designait donc de la memoire deja liberee ;
+ * tous les ESP_LOG*("%s", desc) qui suivaient lisaient du tas recycle.
+ * On copie desormais la description dans un buffer fourni par l'appelant.
+ */
+static bool tg_response_is_ok(const char *resp, char *desc_out, size_t desc_size)
 {
-    if (out_desc) *out_desc = NULL;
+    if (desc_out && desc_size) desc_out[0] = '\0';
     if (!resp) return false;
 
     cJSON *root = cJSON_Parse(resp);
     if (root) {
         cJSON *ok_field = cJSON_GetObjectItem(root, "ok");
         bool ok = cJSON_IsTrue(ok_field);
-        if (!ok && out_desc) {
+        if (!ok && desc_out && desc_size) {
             cJSON *desc = cJSON_GetObjectItem(root, "description");
-            if (desc && cJSON_IsString(desc)) {
-                *out_desc = desc->valuestring;
+            if (cJSON_IsString(desc)) {
+                strncpy(desc_out, desc->valuestring, desc_size - 1);
+                desc_out[desc_size - 1] = '\0';
             }
         }
         cJSON_Delete(root);
@@ -306,21 +333,33 @@ static bool tg_response_is_ok(const char *resp, const char **out_desc)
 
 /* ── Update processing ───────────────────────────────────────── */
 
-static void process_updates(const char *json_str)
+/* Retourne true si l'API a repondu ok:true. En cas d'echec, `desc_out` recoit
+ * la description d'erreur Telegram (copiee, pas un pointeur vers le cJSON). */
+static bool process_updates(const char *json_str, char *desc_out, size_t desc_size)
 {
+    if (desc_out && desc_size) desc_out[0] = '\0';
+
     cJSON *root = cJSON_Parse(json_str);
-    if (!root) return;
+    if (!root) {
+        if (desc_out && desc_size) snprintf(desc_out, desc_size, "JSON illisible");
+        return false;
+    }
 
     cJSON *ok = cJSON_GetObjectItem(root, "ok");
     if (!cJSON_IsTrue(ok)) {
+        cJSON *d = cJSON_GetObjectItem(root, "description");
+        if (cJSON_IsString(d) && desc_out && desc_size) {
+            strncpy(desc_out, d->valuestring, desc_size - 1);
+            desc_out[desc_size - 1] = '\0';
+        }
         cJSON_Delete(root);
-        return;
+        return false;
     }
 
     cJSON *result = cJSON_GetObjectItem(root, "result");
     if (!cJSON_IsArray(result)) {
         cJSON_Delete(root);
-        return;
+        return true;   /* ok:true mais rien a traiter */
     }
 
     cJSON *update;
@@ -380,8 +419,10 @@ static void process_updates(const char *json_str)
 
         /* Whitelist check */
         if (!is_chat_allowed(chat_id_str)) {
+            /* Avant : on repondait "Access denied." — ce qui (a) confirme
+             * l'existence du bot a un inconnu et (b) transforme chaque spam en
+             * requete HTTPS sortante. On se contente de journaliser. */
             ESP_LOGW(TAG, "Blocked message from unlisted chat %s", chat_id_str);
-            telegram_send_message(chat_id_str, "Access denied.");
             continue;
         }
 
@@ -487,11 +528,13 @@ static void process_updates(const char *json_str)
     }
 
     cJSON_Delete(root);
+    return true;
 }
 
 static void telegram_poll_task(void *arg)
 {
     ESP_LOGI(TAG, "Telegram polling task started");
+    int consecutive_errors = 0;
 
     while (1) {
         if (s_bot_token[0] == '\0') {
@@ -507,11 +550,27 @@ static void telegram_poll_task(void *arg)
 
         char *resp = tg_api_call(params, NULL);
         if (resp) {
-            process_updates(resp);
+            /* Avant : on appelait process_updates() sans regarder "ok". Avec un
+             * token invalide, l'API repond 401 instantanement -> boucle serree
+             * qui martele api.telegram.org et affame les autres taches. */
+            char desc[128] = {0};
+            /* process_updates parse deja le JSON : on ne le parse pas deux
+             * fois (une reponse getUpdates peut peser plusieurs Ko). */
+            if (process_updates(resp, desc, sizeof(desc))) {
+                consecutive_errors = 0;
+            } else {
+                consecutive_errors++;
+                ESP_LOGE(TAG, "getUpdates a echoue (%d consecutifs): %s",
+                         consecutive_errors, desc[0] ? desc : "raison inconnue");
+                /* Backoff exponentiel plafonne a 60 s */
+                int backoff_s = 1 << (consecutive_errors > 6 ? 6 : consecutive_errors);
+                vTaskDelay(pdMS_TO_TICKS(backoff_s * 1000));
+            }
             free(resp);
         } else {
-            /* Back off on error */
-            vTaskDelay(pdMS_TO_TICKS(3000));
+            consecutive_errors++;
+            int backoff_s = 1 << (consecutive_errors > 5 ? 5 : consecutive_errors);
+            vTaskDelay(pdMS_TO_TICKS(backoff_s * 1000));
         }
     }
 }
@@ -581,7 +640,24 @@ esp_err_t telegram_send_message(const char *chat_id, const char *text)
         size_t chunk = text_len - offset;
         if (chunk > MIMI_TG_MAX_MSG_LEN) {
             chunk = MIMI_TG_MAX_MSG_LEN;
+
+            /* Coupe sur une frontiere UTF-8 : couper au milieu d'un caractere
+             * multi-octets (accents, emojis) produit du JSON invalide et
+             * Telegram rejette le message entier avec "string is not valid". */
+            chunk = utf8_safe_len(text + offset, chunk);
+
+            /* Puis, si possible, couper sur un saut de ligne ou un espace pour
+             * ne pas casser un mot ni un bloc Markdown au milieu. */
+            size_t nice = chunk;
+            while (nice > chunk / 2 && text[offset + nice - 1] != '\n') nice--;
+            if (nice <= chunk / 2) {
+                nice = chunk;
+                while (nice > chunk / 2 && text[offset + nice - 1] != ' ') nice--;
+            }
+            if (nice > chunk / 2) chunk = nice;
         }
+
+        if (chunk == 0) break;   /* garde-fou : jamais de boucle infinie */
 
         /* Build JSON body */
         cJSON *body = cJSON_CreateObject();
@@ -615,13 +691,13 @@ esp_err_t telegram_send_message(const char *chat_id, const char *text)
 
         int sent_ok = 0;
         bool markdown_failed = false;
+        char desc[128];
         if (resp) {
-            const char *desc = NULL;
-            sent_ok = tg_response_is_ok(resp, &desc);
+            sent_ok = tg_response_is_ok(resp, desc, sizeof(desc));
             if (!sent_ok) {
                 markdown_failed = true;
                 ESP_LOGI(TAG, "Markdown rejected for %s: %s",
-                         chat_id, desc ? desc : "unknown");
+                         chat_id, desc[0] ? desc : "unknown");
             }
         }
 
@@ -642,11 +718,11 @@ esp_err_t telegram_send_message(const char *chat_id, const char *text)
                 char *resp2 = tg_api_call("sendMessage", json2);
                 free(json2);
                 if (resp2) {
-                    const char *desc2 = NULL;
-                    sent_ok = tg_response_is_ok(resp2, &desc2);
+                    char desc2[128];
+                    sent_ok = tg_response_is_ok(resp2, desc2, sizeof(desc2));
                     if (!sent_ok) {
                         ESP_LOGE(TAG, "Plain send failed for %s: %s", chat_id,
-                                 desc2 ? desc2 : "unknown");
+                                 desc2[0] ? desc2 : "unknown");
                         ESP_LOGE(TAG, "Telegram raw response: %.300s", resp2);
                     }
                     free(resp2);
