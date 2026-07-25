@@ -11,6 +11,15 @@
 
 static const char *TAG = "session";
 
+/* Une ligne JSONL peut contenir une reponse LLM complete (jusqu'a
+ * MIMI_TG_MAX_MSG_LEN + echappements JSON). L'ancienne valeur (2048) coupait
+ * les longues reponses en plusieurs lignes -> cJSON_Parse echouait -> message
+ * silencieusement perdu de l'historique. */
+#define SESSION_LINE_MAX     (6 * 1024)
+
+/* Au-dela, on compacte le fichier de session pour ne pas saturer SPIFFS. */
+#define SESSION_FILE_MAX_B   (24 * 1024)
+
 static void session_path(const char *chat_id, char *buf, size_t size)
 {
     snprintf(buf, size, "%s/tg_%s.jsonl", MIMI_SPIFFS_SESSION_DIR, chat_id);
@@ -22,10 +31,56 @@ esp_err_t session_mgr_init(void)
     return ESP_OK;
 }
 
+/* Reecrit le fichier de session en ne gardant que les N dernieres lignes.
+ * Sans ca le fichier grossit indefiniment : SPIFFS finit plein et chaque
+ * lecture d'historique reparse tout le fichier. */
+static void session_compact(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < SESSION_FILE_MAX_B) { fclose(f); return; }
+    rewind(f);
+
+    /* Anneau des MIMI_SESSION_MAX_MSGS dernieres lignes. */
+    char **ring = calloc(MIMI_SESSION_MAX_MSGS, sizeof(char *));
+    char  *line = malloc(SESSION_LINE_MAX);
+    if (!ring || !line) { free(ring); free(line); fclose(f); return; }
+
+    int count = 0, idx = 0;
+    while (fgets(line, SESSION_LINE_MAX, f)) {
+        if (line[0] == '\n' || line[0] == '\0') continue;
+        free(ring[idx]);
+        ring[idx] = strdup(line);
+        idx = (idx + 1) % MIMI_SESSION_MAX_MSGS;
+        if (count < MIMI_SESSION_MAX_MSGS) count++;
+    }
+    fclose(f);
+    free(line);
+
+    FILE *out = fopen(path, "w");
+    if (out) {
+        int start = (count < MIMI_SESSION_MAX_MSGS) ? 0 : idx;
+        for (int i = 0; i < count; i++) {
+            char *l = ring[(start + i) % MIMI_SESSION_MAX_MSGS];
+            if (l) fputs(l, out);
+        }
+        fclose(out);
+        ESP_LOGI(TAG, "Session %s compactee (%ld -> %d messages)", path, sz, count);
+    }
+
+    for (int i = 0; i < MIMI_SESSION_MAX_MSGS; i++) free(ring[i]);
+    free(ring);
+}
+
 esp_err_t session_append(const char *chat_id, const char *role, const char *content)
 {
     char path[64];
     session_path(chat_id, path, sizeof(path));
+
+    session_compact(path);
 
     FILE *f = fopen(path, "a");
     if (!f) {
@@ -41,13 +96,19 @@ esp_err_t session_append(const char *chat_id, const char *role, const char *cont
     char *line = cJSON_PrintUnformatted(obj);
     cJSON_Delete(obj);
 
+    esp_err_t ret = ESP_OK;
     if (line) {
-        fprintf(f, "%s\n", line);
+        if (fprintf(f, "%s\n", line) < 0) {
+            ESP_LOGE(TAG, "Ecriture session echouee (SPIFFS plein ?)");
+            ret = ESP_FAIL;
+        }
         free(line);
+    } else {
+        ret = ESP_ERR_NO_MEM;
     }
 
     fclose(f);
-    return ESP_OK;
+    return ret;
 }
 
 esp_err_t session_get_history_json(const char *chat_id, char *buf, size_t size, int max_msgs)
@@ -62,13 +123,26 @@ esp_err_t session_get_history_json(const char *chat_id, char *buf, size_t size, 
         return ESP_OK;
     }
 
+    /* Borne stricte : `messages` fait MIMI_SESSION_MAX_MSGS entrees, mais
+     * max_msgs vient de l'appelant (MIMI_AGENT_MAX_HISTORY). Si les deux
+     * constantes divergent, on ecrivait hors du tableau. */
+    if (max_msgs <= 0 || max_msgs > MIMI_SESSION_MAX_MSGS) {
+        max_msgs = MIMI_SESSION_MAX_MSGS;
+    }
+
     /* Read all lines into a ring buffer of cJSON objects */
     cJSON *messages[MIMI_SESSION_MAX_MSGS] = {NULL};
     int count = 0;
     int write_idx = 0;
 
-    char line[2048];
-    while (fgets(line, sizeof(line), f)) {
+    char *line = malloc(SESSION_LINE_MAX);
+    if (!line) {
+        fclose(f);
+        snprintf(buf, size, "[]");
+        return ESP_ERR_NO_MEM;
+    }
+
+    while (fgets(line, SESSION_LINE_MAX, f)) {
         /* Strip newline */
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
@@ -85,6 +159,7 @@ esp_err_t session_get_history_json(const char *chat_id, char *buf, size_t size, 
         write_idx = (write_idx + 1) % max_msgs;
         if (count < max_msgs) count++;
     }
+    free(line);
     fclose(f);
 
     /* Build JSON array with only role + content */
@@ -97,11 +172,15 @@ esp_err_t session_get_history_json(const char *chat_id, char *buf, size_t size, 
         cJSON *entry = cJSON_CreateObject();
         cJSON *role = cJSON_GetObjectItem(src, "role");
         cJSON *content = cJSON_GetObjectItem(src, "content");
-        if (role && content) {
+        /* cJSON_IsString obligatoire : sans ca, une ligne corrompue ou un
+         * champ numerique donne valuestring == NULL -> deref NULL. */
+        if (cJSON_IsString(role) && cJSON_IsString(content)) {
             cJSON_AddStringToObject(entry, "role", role->valuestring);
             cJSON_AddStringToObject(entry, "content", content->valuestring);
+            cJSON_AddItemToArray(arr, entry);
+        } else {
+            cJSON_Delete(entry);   /* sinon fuite : entry n'etait jamais libere */
         }
-        cJSON_AddItemToArray(arr, entry);
     }
 
     /* Cleanup ring buffer */
