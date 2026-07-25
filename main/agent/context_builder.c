@@ -1,38 +1,43 @@
 #include "context_builder.h"
 #include "mimi_config.h"
 #include "memory/memory_store.h"
+#include "util/safe_str.h"
 #ifdef MIMI_HAS_SERVOS
 #include "hardware/body_animator.h"
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 
 static const char *TAG = "context";
 
-static size_t append_file(char *buf, size_t size, size_t offset, const char *path, const char *header)
+/* Buffer de travail pour la memoire, alloue en PSRAM (plus sur la pile). */
+#define MEM_SCRATCH_SIZE  4096
+
+/* Concatene un fichier SPIFFS dans le builder, sans jamais deborder.
+ * L'ancienne version faisait `fread(buf + offset, 1, size - offset - 1, f)` :
+ * si offset >= size (troncature snprintf precedente), size - offset - 1
+ * debordait en size_t -> fread de ~4 Go -> corruption de tas. */
+static void append_file(str_builder_t *sb, const char *path, const char *header)
 {
     FILE *f = fopen(path, "r");
-    if (!f) return offset;
+    if (!f) return;
 
-    if (header && offset < size - 1) {
-        offset += snprintf(buf + offset, size - offset, "\n## %s\n\n", header);
-    }
-
-    size_t n = fread(buf + offset, 1, size - offset - 1, f);
-    offset += n;
-    buf[offset] = '\0';
+    if (header) sb_printf(sb, "\n## %s\n\n", header);
+    sb_append_stream(sb, f);
     fclose(f);
-    return offset;
 }
 
 esp_err_t context_build_system_prompt(char *buf, size_t size)
 {
-    size_t off = 0;
+    str_builder_t sb;
+    sb_init(&sb, buf, size);
 
-    off += snprintf(buf + off, size - off,
+    sb_printf(&sb, "%s",
         "# LilyClaw\n\n"
         "You are LilyClaw, a personal AI assistant running on an ESP32-S3 device.\n"
         "You communicate through Telegram and WebSocket.\n"
@@ -95,19 +100,26 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
         "- You should proactively save memory without being asked. If the user tells you their name, preferences, or important facts, persist them immediately.\n");
 
     /* Bootstrap files */
-    off = append_file(buf, size, off, MIMI_SOUL_FILE, "Personality");
-    off = append_file(buf, size, off, MIMI_USER_FILE, "User Info");
+    append_file(&sb, MIMI_SOUL_FILE, "Personality");
+    append_file(&sb, MIMI_USER_FILE, "User Info");
 
-    /* Long-term memory */
-    char mem_buf[4096];
-    if (memory_read_long_term(mem_buf, sizeof(mem_buf)) == ESP_OK && mem_buf[0]) {
-        off += snprintf(buf + off, size - off, "\n## Long-term Memory\n\n%s\n", mem_buf);
-    }
+    /* Memoire longue + notes recentes.
+     * Ces deux buffers faisaient 4 Ko CHACUN sur la pile. Cette fonction est
+     * appelee depuis agent_loop_task (12 Ko de pile) : 8 Ko de locaux + les
+     * appels imbriques = debordement de pile probable. On alloue en PSRAM. */
+    char *scratch = heap_caps_malloc(MEM_SCRATCH_SIZE, MALLOC_CAP_SPIRAM);
+    if (!scratch) scratch = malloc(MEM_SCRATCH_SIZE);
 
-    /* Recent daily notes (last 3 days) */
-    char recent_buf[4096];
-    if (memory_read_recent(recent_buf, sizeof(recent_buf), 3) == ESP_OK && recent_buf[0]) {
-        off += snprintf(buf + off, size - off, "\n## Recent Notes\n\n%s\n", recent_buf);
+    if (scratch) {
+        if (memory_read_long_term(scratch, MEM_SCRATCH_SIZE) == ESP_OK && scratch[0]) {
+            sb_printf(&sb, "\n## Long-term Memory\n\n%s\n", scratch);
+        }
+        if (memory_read_recent(scratch, MEM_SCRATCH_SIZE, 3) == ESP_OK && scratch[0]) {
+            sb_printf(&sb, "\n## Recent Notes\n\n%s\n", scratch);
+        }
+        free(scratch);
+    } else {
+        ESP_LOGW(TAG, "Pas de RAM pour la memoire, prompt sans contexte long terme");
     }
 
 #ifdef MIMI_HAS_SERVOS
@@ -115,11 +127,15 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
     {
         char percep_buf[512];
         body_animator_build_perception(percep_buf, sizeof(percep_buf));
-        off += snprintf(buf + off, size - off, "\n## Current Perception\n\n%s\n", percep_buf);
+        sb_printf(&sb, "\n## Current Perception\n\n%s\n", percep_buf);
     }
 #endif
 
-    ESP_LOGI(TAG, "System prompt built: %d bytes", (int)off);
+    if (sb.full) {
+        ESP_LOGW(TAG, "System prompt tronque a %d octets (MIMI_CONTEXT_BUF_SIZE trop petit "
+                      "ou MEMORY.md trop gros)", (int)sb.off);
+    }
+    ESP_LOGI(TAG, "System prompt built: %d bytes", (int)sb.off);
     return ESP_OK;
 }
 
@@ -143,6 +159,10 @@ esp_err_t context_build_messages(const char *history_json, const char *user_mess
     cJSON_Delete(history);
 
     if (json_str) {
+        size_t jlen = strlen(json_str);
+        if (jlen >= size) {
+            ESP_LOGW(TAG, "Historique tronque (%d > %d octets)", (int)jlen, (int)size);
+        }
         strncpy(buf, json_str, size - 1);
         buf[size - 1] = '\0';
         free(json_str);

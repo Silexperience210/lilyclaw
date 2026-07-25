@@ -1,4 +1,5 @@
 #include "tools/tool_files.h"
+#include "util/safe_str.h"
 #include "mimi_config.h"
 
 #include <stdio.h>
@@ -21,6 +22,9 @@ static bool validate_path(const char *path)
     if (!path) return false;
     if (strncmp(path, "/spiffs/", 8) != 0) return false;
     if (strstr(path, "..") != NULL) return false;
+    /* SPIFFS limite les noms a ~32 caracteres (CONFIG_SPIFFS_OBJ_NAME_LEN) :
+     * au-dela, fopen echoue avec une erreur peu parlante. On le dit. */
+    if (strlen(path) >= 63) return false;
     return true;
 }
 
@@ -48,6 +52,7 @@ esp_err_t tool_read_file_execute(const char *input_json, char *output, size_t ou
         return ESP_ERR_NOT_FOUND;
     }
 
+    if (output_size == 0) { fclose(f); cJSON_Delete(root); return ESP_ERR_INVALID_SIZE; }
     size_t max_read = output_size - 1;
     if (max_read > MAX_FILE_SIZE) max_read = MAX_FILE_SIZE;
 
@@ -236,11 +241,12 @@ esp_err_t tool_list_dir_execute(const char *input_json, char *output, size_t out
         return ESP_FAIL;
     }
 
-    size_t off = 0;
+    str_builder_t sb;
+    sb_init(&sb, output, output_size);
     struct dirent *ent;
     int count = 0;
 
-    while ((ent = readdir(dir)) != NULL && off < output_size - 1) {
+    while ((ent = readdir(dir)) != NULL && !sb.full) {
         /* Build full path: SPIFFS entries are just filenames with embedded slashes */
         char full_path[512];
         snprintf(full_path, sizeof(full_path), "%s/%s", MIMI_SPIFFS_BASE, ent->d_name);
@@ -249,7 +255,7 @@ esp_err_t tool_list_dir_execute(const char *input_json, char *output, size_t out
             continue;
         }
 
-        off += snprintf(output + off, output_size - off, "%s\n", full_path);
+        sb_printf(&sb, "%s\n", full_path);
         count++;
     }
 

@@ -1,4 +1,5 @@
 #include "sonar_radar.h"
+#include "util/safe_str.h"
 #include "mimi_config.h"
 #include "bus/message_bus.h"
 
@@ -232,15 +233,18 @@ int sonar_radar_get_current_index(void)
 
 void sonar_radar_build_perception(char *buf, size_t size)
 {
-    size_t off = 0;
+    /* str_builder_t : `off += snprintf(...)` deborde des qu'il y a troncature
+     * (off > size -> size - off ~= 4 Go en size_t). Voir util/safe_str.h. */
+    str_builder_t sb;
+    sb_init(&sb, buf, size);
 
     if (s_mode == RADAR_OFF) {
-        off += snprintf(buf + off, size - off, "Radar: off");
+        sb_append(&sb, "Radar: off");
         return;
     }
 
-    off += snprintf(buf + off, size - off, "Radar(%s): ",
-                    s_mode == RADAR_SENTINEL ? "sentinel" : "scan");
+    sb_printf(&sb, "Radar(%s): ",
+              s_mode == RADAR_SENTINEL ? "sentinel" : "scan");
 
     /* Resume : trouver les obstacles significatifs */
     int obstacles = 0;
@@ -253,53 +257,49 @@ void sonar_radar_build_perception(char *buf, size_t size)
             else if (a < 100) dir = "devant";
             else dir = "gauche";
 
-            if (obstacles > 0 && off < size - 1) {
-                off += snprintf(buf + off, size - off, ", ");
-            }
-            off += snprintf(buf + off, size - off, "%s@%dcm(%d)", dir, d, a);
+            if (obstacles > 0) sb_append(&sb, ", ");
+            sb_printf(&sb, "%s@%dcm(%d)", dir, d, a);
             obstacles++;
-            if (obstacles >= 6 || off >= size - 20) break; /* limite */
+            if (obstacles >= 6 || sb.full) break; /* limite */
         }
     }
 
-    if (obstacles == 0) {
-        off += snprintf(buf + off, size - off, "rien detecte");
-    }
+    if (obstacles == 0) sb_append(&sb, "rien detecte");
 
     /* Sentinelle active ? */
-    if (s_mode == RADAR_SENTINEL && s_baseline_set) {
-        off += snprintf(buf + off, size - off, " [ARME]");
-    }
+    if (s_mode == RADAR_SENTINEL && s_baseline_set) sb_append(&sb, " [ARME]");
 }
 
 void sonar_radar_build_report(char *buf, size_t size)
 {
-    size_t off = 0;
-    off += snprintf(buf + off, size - off, "=== Scan Radar ===\n");
-    off += snprintf(buf + off, size - off, "Balayage %d-%d deg, %d points\n",
-                    RADAR_SWEEP_MIN, RADAR_SWEEP_MAX, RADAR_POINTS);
+    str_builder_t sb;
+    sb_init(&sb, buf, size);
+
+    sb_append(&sb, "=== Scan Radar ===\n");
+    sb_printf(&sb, "Balayage %d-%d deg, %d points\n",
+              RADAR_SWEEP_MIN, RADAR_SWEEP_MAX, RADAR_POINTS);
+
+    /* On reserve ~40 octets pour le pied de rapport (Baseline/Mode). */
+    const size_t footer_reserve = 48;
 
     for (int i = 0; i < RADAR_POINTS; i++) {
         uint8_t angle = sonar_radar_index_to_angle(i);
         int16_t d = s_sweeps[0][i].distance;
         if (d > 0) {
-            off += snprintf(buf + off, size - off, "%3d deg: %d cm", angle, d);
-            /* Comparaison baseline si dispo */
+            sb_printf(&sb, "%3d deg: %d cm", angle, d);
             if (s_baseline_set && s_baseline[i] > 0) {
                 int diff = s_baseline[i] - d;
                 if (diff > SENTINEL_THRESHOLD_CM) {
-                    off += snprintf(buf + off, size - off, " [CHANGE: base=%d]", s_baseline[i]);
+                    sb_printf(&sb, " [CHANGE: base=%d]", s_baseline[i]);
                 }
             }
-            off += snprintf(buf + off, size - off, "\n");
+            sb_append(&sb, "\n");
         }
-        if (off >= size - 40) break;
+        if (sb.full || sb_remaining(&sb) < footer_reserve) break;
     }
 
-    if (s_baseline_set) {
-        off += snprintf(buf + off, size - off, "Baseline: active\n");
-    }
-    off += snprintf(buf + off, size - off, "Mode: %s\n",
-                    s_mode == RADAR_OFF ? "off" :
-                    s_mode == RADAR_SCAN ? "scan" : "sentinel");
+    if (s_baseline_set) sb_append(&sb, "Baseline: active\n");
+    sb_printf(&sb, "Mode: %s\n",
+              s_mode == RADAR_OFF ? "off" :
+              s_mode == RADAR_SCAN ? "scan" : "sentinel");
 }
