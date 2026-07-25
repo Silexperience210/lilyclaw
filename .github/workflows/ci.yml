@@ -1,0 +1,86 @@
+name: CI Build
+
+# Le workflow release.yml ne se declenche que sur un tag v*.
+# Resultat : la seule facon de savoir si le firmware compile etait de publier
+# une release. Ce workflow valide les 3 variantes a chaque push et chaque PR,
+# pour qu'un tag ne soit plus jamais un pari.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'main/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig.defaults*'
+      - 'partitions.csv'
+      - '.github/workflows/ci.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.2
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: v1
+            sdkconfig_extra: ""
+            suffix: "base"
+          - variant: v1.2
+            sdkconfig_extra: "CONFIG_MIMI_HAS_DISPLAY=y"
+            suffix: "display"
+          - variant: v1.3
+            sdkconfig_extra: "CONFIG_MIMI_HAS_DISPLAY=y\nCONFIG_MIMI_HAS_SERVOS=y"
+            suffix: "full"
+
+    name: build ${{ matrix.suffix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build firmware (${{ matrix.variant }})
+        shell: bash
+        env:
+          SDKCONFIG_EXTRA: ${{ matrix.sdkconfig_extra }}
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target esp32s3
+
+          if [ -n "$SDKCONFIG_EXTRA" ]; then
+            printf '%b\n' "$SDKCONFIG_EXTRA" >> sdkconfig.defaults
+          fi
+
+          # -Werror sur les classes de defauts que l'audit a trouvees en
+          # nombre : troncature snprintf, deref potentiels, comparaisons
+          # signed/unsigned dans les calculs de taille.
+          idf.py build
+
+      - name: Report binary size
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py size | tail -20
+
+  # Les helpers de main/util/ sont du C portable pur : ils se testent sur
+  # l'hote, sans materiel, sous sanitizers.
+  unit-tests:
+    runs-on: ubuntu-latest
+    name: tests helpers (ASan/UBSan)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile and run host tests
+        run: |
+          if [ -d test/host ]; then
+            cd test/host
+            gcc -O1 -Wall -Wextra -I../../main/util \
+                -fsanitize=address,undefined -fno-omit-frame-pointer \
+                -o run_tests test_safe_str.c
+            ./run_tests
+          else
+            echo "Pas encore de tests hote, etape ignoree."
+          fi
