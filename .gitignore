@@ -41,3 +41,7 @@ nanobot/
 # OS
 .DS_Store
 Thumbs.db
+
+test/host/test_safe_str
+test/host/test_soul
+test/host/run_tests

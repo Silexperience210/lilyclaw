@@ -21,6 +21,8 @@ set(SRCS
     "tools/tool_timer.c"
     "scheduler/task_scheduler.c"
     "portal/captive_portal.c"
+    "soul/drives.c"
+    "soul/salience.c"
 )
 
 # v1.2 : ecran T-Display S3 + boutons + deep sleep

@@ -118,12 +118,18 @@ jobs:
 
       - name: Compile and run host tests
         run: |
-          if [ -d test/host ]; then
-            cd test/host
-            gcc -O1 -Wall -Wextra -I../../main/util \
-                -fsanitize=address,undefined -fno-omit-frame-pointer \
-                -o run_tests test_safe_str.c
-            ./run_tests
-          else
-            echo "Pas encore de tests hote, etape ignoree."
-          fi
+          set -e
+          cd test/host
+          SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+          # Helpers de chaines et framing HTTP
+          gcc -O1 -Wall -Wextra -std=gnu11 -I../../main/util $SAN \
+              -o test_safe_str test_safe_str.c
+          ./test_safe_str
+
+          # Etat interieur + budget d'initiative.
+          # TZ fixe : le rythme circadien et les heures creuses en dependent.
+          gcc -O1 -Wall -Wextra -std=gnu11 -I../../main $SAN \
+              -o test_soul test_soul.c \
+              ../../main/soul/drives.c ../../main/soul/salience.c -lm
+          TZ=Europe/Luxembourg ./test_soul
