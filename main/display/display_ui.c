@@ -337,20 +337,6 @@ static void fb_draw_string_n(int x, int y, const char *str, int max_chars,
     }
 }
 
-static void fb_draw_sprite(int x, int y, const uint16_t *sprite, int w, int h, int scale)
-{
-    for (int row = 0; row < h; row++) {
-        for (int col = 0; col < w; col++) {
-            uint16_t px = sprite[row * w + col];
-            if (px == C_BG) continue;  /* transparent */
-            for (int sy = 0; sy < scale; sy++) {
-                for (int sx = 0; sx < scale; sx++) {
-                    fb_pixel(x + col * scale + sx, y + row * scale + sy, px);
-                }
-            }
-        }
-    }
-}
 
 /* Flush framebuffer PSRAM vers l'ecran par bandes */
 static void fb_flush(void)
