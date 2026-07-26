@@ -64,6 +64,40 @@ jobs:
           idf.py set-target esp32s3
           idf.py build
 
+      - name: Binaire de test flashable
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          SUFFIX="${{ matrix.suffix }}"
+          SHORT="${GITHUB_SHA::8}"
+
+          # Image fusionnee : un seul fichier a flasher a l'offset 0, comme
+          # pour une release, mais SANS publier quoi que ce soit. Sert a
+          # tester une branche sur du vrai materiel avant de tagger.
+          esptool.py --chip esp32s3 merge_bin \
+            --flash_mode qio --flash_size 16MB --flash_freq 80m \
+            -o "lilyclaw-${SUFFIX}-${SHORT}.bin" \
+            0x0     build/bootloader/bootloader.bin \
+            0x8000  build/partition_table/partition-table.bin \
+            0xf000  build/ota_data_initial.bin \
+            0x20000 build/mimiclaw.bin
+
+          # Pas de python multi-ligne ici : les lignes commenceraient en
+          # colonne 0 et termineraient le bloc "run: |" -> YAML invalide,
+          # workflow non parse, zero job execute et un echec sans logs.
+          APP=$(stat -c%s build/mimiclaw.bin)
+          PCT=$(( APP * 1000 / (2 * 1024 * 1024) ))
+          echo "--- taille ---"
+          ls -l build/mimiclaw.bin "lilyclaw-${SUFFIX}-${SHORT}.bin"
+          echo "app: $(( APP / 1024 )) Ko  ($(( PCT / 10 )).$(( PCT % 10 )) % de la partition ota_0 de 2 Mo)"
+
+      - name: Publier le binaire de test
+        uses: actions/upload-artifact@v4
+        with:
+          name: lilyclaw-${{ matrix.suffix }}-${{ github.sha }}
+          path: lilyclaw-*.bin
+          retention-days: 14
+
       - name: Verifier que la variante est bien celle attendue
         shell: bash
         env:
