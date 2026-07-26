@@ -31,6 +31,8 @@ if(CONFIG_MIMI_HAS_DISPLAY)
     list(APPEND SRCS
         "display/display_hal.c"
         "display/display_ui.c"
+        "display/render.c"
+        "display/screen_presence.c"
         "input/button_handler.c"
         "power/sleep_manager.c"
         "power/battery_monitor.c"
