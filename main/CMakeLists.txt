@@ -33,6 +33,7 @@ if(CONFIG_MIMI_HAS_DISPLAY)
         "display/display_ui.c"
         "display/render.c"
         "display/screen_presence.c"
+        "display/screen_field.c"
         "input/button_handler.c"
         "power/sleep_manager.c"
         "power/battery_monitor.c"
