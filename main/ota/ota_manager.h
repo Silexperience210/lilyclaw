@@ -41,6 +41,19 @@ esp_err_t ota_check_update(ota_update_info_t *info);
 esp_err_t ota_update_from_url(const char *url);
 
 /**
+ * Comme ota_update_from_url(), mais verifie le SHA256 de l'image ecrite avant
+ * de laisser l'appareil redemarrer dessus.
+ *
+ * `expected_sha256` : 64 caracteres hexadecimaux, typiquement
+ * ota_update_info_t::sha256_hash extrait des notes de version. NULL ou vide
+ * desactive la verification (et journalise un avertissement).
+ *
+ * Retourne ESP_ERR_INVALID_CRC si le hash ne correspond pas ; dans ce cas la
+ * partition de boot est remise sur l'image actuellement en cours.
+ */
+esp_err_t ota_update_from_url_verified(const char *url, const char *expected_sha256);
+
+/**
  * Verifie si un rollback est possible (version precedente disponible).
  */
 bool ota_can_rollback(void);

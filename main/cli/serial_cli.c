@@ -398,7 +398,7 @@ static int cmd_ota_update(int argc, char **argv)
         return 0;
     }
     printf("Installing v%s... Device will reboot.\n", info.version);
-    ret = ota_update_from_url(info.url);
+    ret = ota_update_from_url_verified(info.url, info.sha256_hash);
     if (ret != ESP_OK) {
         printf("OTA failed: %s\n", esp_err_to_name(ret));
         return 1;

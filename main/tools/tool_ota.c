@@ -57,7 +57,7 @@ esp_err_t tool_do_update_execute(const char *input_json, char *output, size_t ou
     ESP_LOGI(TAG, "do_update: installing v%s from %s", info.version, info.url);
 
     /* Lancer l'OTA — ne retourne pas si succes (reboot) */
-    ret = ota_update_from_url(info.url);
+    ret = ota_update_from_url_verified(info.url, info.sha256_hash);
     if (ret != ESP_OK) {
         snprintf(output, output_size,
                  "OTA failed: %s. Device stays on v%s.",

@@ -20,6 +20,7 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_https_ota.h"
+#include "esp_partition.h"
 #include "esp_heap_caps.h"
 #include "esp_partition.h"
 #include "mbedtls/sha256.h"
@@ -179,29 +180,72 @@ static char *github_api_get(const char *url, size_t *out_len)
     return rb.data;
 }
 
-/* --- Vérification SHA256 --- */
+/* --- Verification SHA256 --- */
 
-static bool verify_sha256(const uint8_t *data, size_t len, const char *expected_hash)
+/*
+ * BUG CORRIGE : verify_sha256() prenait un buffer complet et n'etait APPELEE
+ * NULLE PART. Le hash annonce dans les notes de version etait parse, stocke
+ * dans info->sha256_hash et journalise — puis ignore. L'OTA ecrivait donc le
+ * firmware sans le moindre controle d'integrite.
+ *
+ * La cause est visible dans l'historique : la fonction a ete ecrite pour un
+ * telechargement en memoire, puis l'OTA est passe a esp_https_ota en flux,
+ * ou l'image n'est jamais entierement en RAM. La fonction est devenue
+ * orpheline et le compilateur le signalait depuis (warning -Wunused-function,
+ * noye dans le reste).
+ *
+ * On verifie desormais APRES ecriture, en relisant la partition par blocs.
+ * Cout : une relecture de flash de quelques secondes, ce qui est negligeable
+ * face au telechargement.
+ *
+ * PORTEE EXACTE DE CETTE PROTECTION
+ * Le hash provient du meme serveur que le binaire. Il detecte donc une
+ * image tronquee ou corrompue en transit — cause reelle de briquage — mais
+ * PAS une substitution par un attaquant qui controle le serveur. Pour ca il
+ * faut la signature applicative (CONFIG_SECURE_SIGNED_APPS). Ne pas
+ * confondre les deux.
+ */
+static bool verify_partition_sha256(const esp_partition_t *part, size_t len,
+                                    const char *expected_hash)
 {
-    uint8_t hash[32];
+    if (!part || !expected_hash || strlen(expected_hash) != 64) return false;
+
+    uint8_t *buf = malloc(4096);
+    if (!buf) {
+        ESP_LOGE(TAG, "Pas de RAM pour verifier le hash");
+        return false;
+    }
+
     mbedtls_sha256_context ctx;
-    
     mbedtls_sha256_init(&ctx);
     mbedtls_sha256_starts(&ctx, 0);
-    mbedtls_sha256_update(&ctx, data, len);
+
+    bool ok = true;
+    for (size_t off = 0; off < len; ) {
+        size_t n = (len - off > 4096) ? 4096 : (len - off);
+        if (esp_partition_read(part, off, buf, n) != ESP_OK) {
+            ESP_LOGE(TAG, "Lecture partition echouee a l'offset %u", (unsigned)off);
+            ok = false;
+            break;
+        }
+        mbedtls_sha256_update(&ctx, buf, n);
+        off += n;
+    }
+
+    uint8_t hash[32];
     mbedtls_sha256_finish(&ctx, hash);
     mbedtls_sha256_free(&ctx);
-    
-    /* Convertir le hash en hex string */
+    free(buf);
+
+    if (!ok) return false;
+
     char hash_hex[65];
-    for (int i = 0; i < 32; i++) {
-        sprintf(hash_hex + (i * 2), "%02x", hash[i]);
-    }
+    for (int i = 0; i < 32; i++) sprintf(hash_hex + (i * 2), "%02x", hash[i]);
     hash_hex[64] = '\0';
-    
-    ESP_LOGI(TAG, "SHA256 calculé: %s", hash_hex);
+
+    ESP_LOGI(TAG, "SHA256 calcule: %s", hash_hex);
     ESP_LOGI(TAG, "SHA256 attendu: %s", expected_hash);
-    
+
     return strcasecmp(hash_hex, expected_hash) == 0;
 }
 
@@ -330,6 +374,12 @@ static void ota_progress_cb(size_t downloaded, size_t total)
 
 esp_err_t ota_update_from_url(const char *url)
 {
+    /* Sans hash attendu : ancien comportement, conserve pour compatibilite. */
+    return ota_update_from_url_verified(url, NULL);
+}
+
+esp_err_t ota_update_from_url_verified(const char *url, const char *expected_sha256)
+{
     ESP_LOGI(TAG, "Starting OTA from: %s", url);
 
     /* Vérifie qu'on a assez de mémoire */
@@ -349,6 +399,11 @@ esp_err_t ota_update_from_url(const char *url)
     esp_https_ota_config_t ota_config = {
         .http_config = &http_config,
     };
+
+    /* On note la partition cible AVANT de commencer : apres esp_https_ota_finish()
+     * la partition "suivante" a change, et on relirait la mauvaise. */
+    const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
+    const esp_partition_t *previous = esp_ota_get_running_partition();
 
     esp_https_ota_handle_t handle = NULL;
     esp_err_t ret = esp_https_ota_begin(&ota_config, &handle);
@@ -406,6 +461,27 @@ esp_err_t ota_update_from_url(const char *url)
 
     /* Vérifie que l'image est valide */
     ret = esp_https_ota_finish(handle);
+
+    /* ── Controle d'integrite ──
+     * esp_https_ota valide l'entete et la somme de controle du format image
+     * ESP32, ce qui attrape une image manifestement cassee. Mais ca ne dit
+     * rien sur le fait que ce soit bien LE binaire annonce par la release.
+     * Une image tronquee qui garde un entete coherent passe. */
+    if (ret == ESP_OK && expected_sha256 && expected_sha256[0]) {
+        ESP_LOGI(TAG, "Verification du SHA256 sur la partition ecrite...");
+        if (!verify_partition_sha256(target, (size_t)total, expected_sha256)) {
+            ESP_LOGE(TAG, "SHA256 INVALIDE — firmware rejete, retour a la partition actuelle");
+            /* esp_https_ota_finish a deja bascule le boot : on annule, sinon
+             * on redemarre sur une image dont on vient de prouver qu'elle est
+             * corrompue. */
+            if (previous) esp_ota_set_boot_partition(previous);
+            return ESP_ERR_INVALID_CRC;
+        }
+        ESP_LOGI(TAG, "SHA256 verifie");
+    } else if (ret == ESP_OK) {
+        ESP_LOGW(TAG, "Aucun SHA256 annonce dans la release : mise a jour non verifiee");
+    }
+
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "OTA successful! Validating...");
         
