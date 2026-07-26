@@ -247,7 +247,6 @@ static void fill_field_input(field_input_t *in, float energy_boost)
         snprintf(in->clock, sizeof(in->clock), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
     }
 }
-static uint16_t s_line_buf[MIMI_DISP_WIDTH * MIMI_DISP_BUF_LINES];
 
 /* ---- Helpers PSRAM framebuffer ---- */
 
