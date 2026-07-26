@@ -1,6 +1,9 @@
 #include "display_ui.h"
+#include "display/design.h"
+#include "display/render.h"
+#include "display/screen_field.h"
+#include "soul/drives.h"
 #include "display_hal.h"
-#include "lobster_sprite.h"
 #include "mimi_config.h"
 #include "ota/ota_manager.h"
 #include "power/battery_monitor.h"
@@ -11,6 +14,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -163,15 +167,6 @@ static bool s_transitioning = false;
 static int s_transition_frame = 0;
 static display_state_t s_transition_target;
 
-/* Screensaver aquarium */
-static int s_lobster_x = 60;
-static int s_lobster_dir = 1;  /* 1=droite, -1=gauche */
-typedef struct {
-    int x, y;
-    int speed;  /* pixels par frame */
-    int size;   /* rayon */
-} bubble_t;
-static bubble_t s_bubbles[MIMI_DISP_BUBBLE_COUNT];
 
 /* Typewriter */
 static int s_typewriter_pos = 0;
@@ -212,6 +207,46 @@ static const uint16_t s_etch_palette[] = {
 
 /* ---- Buffer PSRAM double ---- */
 static uint16_t *s_framebuf = NULL;  /* framebuffer complet en PSRAM */
+
+/* Le canvas des nouvelles primitives pointe directement sur le framebuffer
+ * PSRAM : aucune copie, aucune allocation supplementaire. */
+static canvas_t s_cv = { NULL, MIMI_DISP_WIDTH, MIMI_DISP_HEIGHT };
+
+/* Direction de la personne detectee, poussee par body_animator.
+ * -2 = personne. Sans servos, reste a -2 en permanence et le champ reste
+ * centre, ce qui est le comportement voulu sur les variantes sans capteurs. */
+static float s_attention_x = -2.0f;
+
+void display_ui_set_attention(float x)
+{
+    if (x < -2.0f) x = -2.0f;
+    if (x >  1.0f) x =  1.0f;
+    s_attention_x = x;
+}
+
+/* Traduit l'etat interieur courant en entree de rendu. */
+static void fill_field_input(field_input_t *in, float energy_boost)
+{
+    mimi_drives_t d;
+    drives_get(&d);
+
+    memset(in, 0, sizeof(*in));
+    in->arousal       = d.arousal + energy_boost;
+    if (in->arousal > 1.0f) in->arousal = 1.0f;
+    in->social_hunger = d.social_hunger;
+    in->curiosity     = d.curiosity;
+    in->unease        = d.unease;
+    in->attention_x   = s_attention_x;
+    in->t_seconds     = (float)(esp_timer_get_time() / 1000) / 1000.0f;
+    in->online        = s_wifi_ok;
+
+    time_t now = time(NULL);
+    if (now > 1600000000L) {
+        struct tm tmv;
+        localtime_r(&now, &tmv);
+        snprintf(in->clock, sizeof(in->clock), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+    }
+}
 static uint16_t s_line_buf[MIMI_DISP_WIDTH * MIMI_DISP_BUF_LINES];
 
 /* ---- Helpers PSRAM framebuffer ---- */
@@ -356,341 +391,163 @@ static void fill_rect(int x, int y, int w, int h, uint16_t color)
 #define EYE_R_X  17
 #define EYE_Y    11
 
-static void draw_mood_eyes(int base_x, int base_y, int scale)
-{
-    /* Dessine les yeux par-dessus le sprite selon l'humeur */
-    switch (s_mood) {
-    case MOOD_HAPPY:
-        /* Yeux en demi-lune (arcs vers le haut) : U U */
-        for (int e = 0; e < 2; e++) {
-            int ex = base_x + (e == 0 ? EYE_L_X : EYE_R_X) * scale;
-            int ey = base_y + EYE_Y * scale;
-            /* Arc : pixels du bas de l'oeil seulement */
-            for (int sx = 0; sx < 3 * scale; sx++) {
-                fb_pixel(ex + sx, ey + 2 * scale, COL_TEXT);
-                fb_pixel(ex + sx, ey + 2 * scale + 1, COL_TEXT);
-            }
-            fb_pixel(ex, ey + 1 * scale, COL_TEXT);
-            fb_pixel(ex + 3 * scale - 1, ey + 1 * scale, COL_TEXT);
-        }
-        break;
-
-    case MOOD_EXCITED:
-        /* Yeux en etoile : * * */
-        for (int e = 0; e < 2; e++) {
-            int ex = base_x + (e == 0 ? EYE_L_X : EYE_R_X) * scale + 1 * scale;
-            int ey = base_y + (EYE_Y + 1) * scale;
-            /* Croix + diagonales */
-            for (int d = -1; d <= 1; d++) {
-                fb_pixel(ex + d * scale, ey, COL_STAR);
-                fb_pixel(ex, ey + d * scale, COL_STAR);
-                fb_pixel(ex + d * scale, ey + d * scale, COL_STAR);
-                fb_pixel(ex + d * scale, ey - d * scale, COL_STAR);
-            }
-        }
-        break;
-
-    case MOOD_FOCUSED:
-        /* Lunettes carrees autour des yeux */
-        for (int e = 0; e < 2; e++) {
-            int ex = base_x + (e == 0 ? EYE_L_X - 1 : EYE_R_X - 1) * scale;
-            int ey = base_y + (EYE_Y - 1) * scale;
-            int gw = 5 * scale;
-            int gh = 5 * scale;
-            /* Cadre */
-            for (int i = 0; i < gw; i++) {
-                fb_pixel(ex + i, ey, COL_TEXT);
-                fb_pixel(ex + i, ey + gh - 1, COL_TEXT);
-            }
-            for (int i = 0; i < gh; i++) {
-                fb_pixel(ex, ey + i, COL_TEXT);
-                fb_pixel(ex + gw - 1, ey + i, COL_TEXT);
-            }
-        }
-        /* Pont entre les lunettes */
-        {
-            int bridge_y = base_y + EYE_Y * scale;
-            int bridge_x1 = base_x + (EYE_L_X + 3) * scale;
-            int bridge_x2 = base_x + (EYE_R_X - 1) * scale;
-            for (int i = bridge_x1; i <= bridge_x2; i++)
-                fb_pixel(i, bridge_y, COL_TEXT);
-        }
-        break;
-
-    case MOOD_SLEEPY:
-        /* Yeux fermes + Zzz flottant */
-        /* Les yeux fermes sont deja dans lobster_blink, on ajoute juste Zzz */
-        {
-            int zx = base_x + 24 * scale;
-            int zy = base_y - 5 * scale;
-            int offset = (s_frame_count / 3) % 4;
-            fb_draw_char(zx, zy - offset * 2, 'Z', COL_DIM, scale > 1 ? scale - 1 : 1);
-            fb_draw_char(zx + 4 * scale, zy - 8 - offset * 2, 'z', COL_DIM, scale > 1 ? scale - 1 : 1);
-            fb_draw_char(zx + 2 * scale, zy - 16 - offset * 2, 'z', COL_DIM, 1);
-        }
-        break;
-
-    case MOOD_PROUD:
-        /* Petites etoiles/sparkles autour du lobster */
-        {
-            int sparkle_offsets[][2] = {
-                {-8, 5}, {28, -3}, {-5, 20}, {30, 18}, {0, -6}, {25, 28}
-            };
-            int n_sparkles = 6;
-            int visible = (s_frame_count / 2) % (n_sparkles + 1);
-            for (int i = 0; i < visible && i < n_sparkles; i++) {
-                int sx = base_x + sparkle_offsets[i][0] * scale;
-                int sy = base_y + sparkle_offsets[i][1] * scale;
-                fb_pixel(sx, sy, COL_STAR);
-                fb_pixel(sx - 1, sy, COL_STAR);
-                fb_pixel(sx + 1, sy, COL_STAR);
-                fb_pixel(sx, sy - 1, COL_STAR);
-                fb_pixel(sx, sy + 1, COL_STAR);
-            }
-        }
-        break;
-
-    default:
-        break;
-    }
-}
 
 /* ---- Bulles aquarium ---- */
 
-static void bubbles_init(void)
-{
-    for (int i = 0; i < MIMI_DISP_BUBBLE_COUNT; i++) {
-        s_bubbles[i].x = esp_random() % MIMI_DISP_WIDTH;
-        s_bubbles[i].y = MIMI_DISP_HEIGHT + (esp_random() % 100);
-        s_bubbles[i].speed = 1 + (esp_random() % 3);
-        s_bubbles[i].size = 1 + (esp_random() % 3);
-    }
-}
 
-static void bubbles_update(void)
-{
-    for (int i = 0; i < MIMI_DISP_BUBBLE_COUNT; i++) {
-        s_bubbles[i].y -= s_bubbles[i].speed;
-        /* Leger mouvement horizontal sinusoidal */
-        s_bubbles[i].x += ((s_frame_count + i * 7) % 3 == 0) ? 1 : 0;
-        s_bubbles[i].x -= ((s_frame_count + i * 5) % 3 == 0) ? 1 : 0;
 
-        /* Reset si sorti de l'ecran */
-        if (s_bubbles[i].y < -5) {
-            s_bubbles[i].x = esp_random() % MIMI_DISP_WIDTH;
-            s_bubbles[i].y = MIMI_DISP_HEIGHT + (esp_random() % 40);
-            s_bubbles[i].speed = 1 + (esp_random() % 3);
-            s_bubbles[i].size = 1 + (esp_random() % 3);
-        }
-    }
-}
-
-static void bubbles_draw(void)
-{
-    for (int i = 0; i < MIMI_DISP_BUBBLE_COUNT; i++) {
-        int bx = s_bubbles[i].x;
-        int by = s_bubbles[i].y;
-        int r = s_bubbles[i].size;
-        /* Cercle simple */
-        for (int dy = -r; dy <= r; dy++) {
-            for (int dx = -r; dx <= r; dx++) {
-                if (dx * dx + dy * dy <= r * r) {
-                    fb_pixel(bx + dx, by + dy, COL_BUBBLE);
-                }
-            }
-        }
-        /* Reflet */
-        fb_pixel(bx - r / 2, by - r / 2, COL_TEXT);
-    }
-}
 
 /* Algues au fond de l'ecran */
-static void draw_seaweed(void)
-{
-    /* 5 algues reparties sur la largeur (320px paysage) */
-    int positions[] = {20, 80, 150, 220, 280};
-    for (int a = 0; a < 5; a++) {
-        int base_x = positions[a];
-        int height = 20 + (a % 3) * 8;
-        int sway = ((s_frame_count + a * 3) / 4) % 5 - 2;
-
-        for (int y = 0; y < height; y++) {
-            int x = base_x + (y * sway) / height;
-            int w = 3 - (y * 2 / height);
-            if (w < 1) w = 1;
-            fb_fill_rect(x, MIMI_DISP_HEIGHT - 10 - y, w, 1, COL_SEAWEED);
-        }
-    }
-    /* Fond sableux */
-    fb_fill_rect(0, MIMI_DISP_HEIGHT - 10, MIMI_DISP_WIDTH, 10, 0x4208);
-}
 
 /* ---- Ecrans ---- */
 
-static void draw_status_bar(void)
-{
-    fb_fill_rect(0, 0, MIMI_DISP_WIDTH, 12, COL_BG);
-    uint16_t wifi_col = s_wifi_ok ? COL_GREEN : COL_RED;
-    fb_draw_char(2, 2, s_wifi_ok ? 'W' : '!', wifi_col, 1);
-    if (s_wifi_ok && s_ip[0]) {
-        fb_draw_string(12, 2, s_ip, COL_DIM, 1);
-    }
-    /* Compteur messages en haut a droite */
-    if (s_msg_count > 0) {
-        char cnt[12];
-        snprintf(cnt, sizeof(cnt), "%lu", (unsigned long)s_msg_count);
-        int len = strlen(cnt);
-        fb_draw_string(MIMI_DISP_WIDTH - len * 6 - 2, 2, cnt, COL_ACCENT, 1);
-    }
-}
 
+/*
+ * Repos. Le champ volumetrique EST l'ecran : plus de mascotte, plus de
+ * bandeau, plus de sous-titre d'humeur. L'etat interieur se lit dans la
+ * forme et la couleur, pas dans une legende qui l'annonce.
+ */
 static void draw_idle(void)
 {
-    fb_clear(COL_BG);
-    draw_status_bar();
+    field_input_t in;
+    fill_field_input(&in, 0.0f);
 
-    /* Paysage : lobster a gauche (scale 3 = 96x96), texte a droite */
-    int sprite_scale = 3;
-    int sx = 10;
-    int sy = (MIMI_DISP_HEIGHT - LOBSTER_H * sprite_scale) / 2 + 6;
-
-    bool use_blink = false;
-    if (s_mood == MOOD_SLEEPY) {
-        use_blink = true;
-    } else if (s_mood == MOOD_NEUTRAL) {
-        use_blink = (s_frame_count % (MIMI_DISP_FPS_IDLE * 4) < 1);
+    /* Le dernier message tient lieu de contexte, tronque court : l'ecran de
+     * repos n'est pas un lecteur de messages. */
+    if (s_message[0]) {
+        snprintf(in.footer, sizeof(in.footer), "%.40s", s_message);
     }
 
-    const uint16_t *frame = use_blink ? lobster_blink : lobster_idle;
-    fb_draw_sprite(sx, sy, frame, LOBSTER_W, LOBSTER_H, sprite_scale);
-    draw_mood_eyes(sx, sy, sprite_scale);
-
-    /* Titre a droite du lobster */
-    int tx = sx + LOBSTER_W * sprite_scale + 15;
-    fb_draw_string(tx, 25, "LilyClaw", COL_ACCENT, 2);
-
-    /* Sous-titre selon humeur */
-    const char *sub = "AI Assistant";
-    switch (s_mood) {
-    case MOOD_HAPPY:   sub = "I'm happy!"; break;
-    case MOOD_SLEEPY:  sub = "Sleepy..."; break;
-    case MOOD_EXCITED: sub = "New message!"; break;
-    case MOOD_PROUD:   sub = "Nailed it!"; break;
-    default: break;
-    }
-    fb_draw_string(tx, 52, sub, COL_DIM, 1);
-
-    /* Ligne decorative */
-    fb_fill_rect(tx, 65, 120, 1, COL_ACCENT);
-    fb_draw_string(tx, 72, "ESP32-S3 AI", COL_DIM, 1);
-
-    /* Version en bas a droite */
-    char ver_str[16];
-    snprintf(ver_str, sizeof(ver_str), "v%s", MIMI_FW_VERSION);
-    int ver_len = strlen(ver_str);
-    fb_draw_string(MIMI_DISP_WIDTH - ver_len * 6 - 4, MIMI_DISP_HEIGHT - 10,
-                   ver_str, COL_DIM, 1);
+    screen_field_draw(&s_cv, &in);
 }
 
+/*
+ * Reflexion. Meme champ, energie relevee, plus une onde de balayage qui
+ * traverse lentement. Pas de barre de progression : on ne connait pas la
+ * duree d'un appel LLM, et une barre qui ment est pire que pas de barre.
+ */
 static void draw_thinking(void)
 {
-    fb_clear(COL_BG);
-    draw_status_bar();
+    field_input_t in;
+    fill_field_input(&in, 0.35f);
+    in.footer[0] = '\0';
+    screen_field_draw(&s_cv, &in);
 
-    /* Paysage : lobster a gauche (scale 3 = 96x96), thinking a droite */
-    int sprite_scale = 3;
-    int sx = 10;
-    int sy = (MIMI_DISP_HEIGHT - LOBSTER_H * sprite_scale) / 2 + 6;
+    /* Balayage : une bande claire qui parcourt l'ecran. C'est le seul
+     * element qui bouge vite, conformement a la regle "une seule chose
+     * rapide a la fois". */
+    float t = in.t_seconds;
+    float sweep = fmodf(t * 0.55f, 1.35f) - 0.18f;
+    int   cx = (int)(sweep * (float)MIMI_DISP_WIDTH);
 
-    int anim = (s_frame_count / 4) % 2;
-    const uint16_t *frame = anim ? lobster_blink : lobster_idle;
-    fb_draw_sprite(sx, sy, frame, LOBSTER_W, LOBSTER_H, sprite_scale);
-
-    s_mood = MOOD_FOCUSED;
-    draw_mood_eyes(sx, sy, sprite_scale);
-
-    /* Texte a droite */
-    int tx = sx + LOBSTER_W * sprite_scale + 15;
-    int dots = (s_frame_count / 5) % 4;
-    char think_text[16] = "Thinking";
-    for (int i = 0; i < dots; i++) strcat(think_text, ".");
-    fb_draw_string(tx, 35, think_text, COL_THINK, 2);
-
-    /* Barre de progression */
-    int bar_y = 68;
-    int bar_w = MIMI_DISP_WIDTH - tx - 10;
-    fb_fill_rect(tx, bar_y, bar_w, 4, 0x2104);
-    int progress = (s_frame_count * 3) % bar_w;
-    int seg_w = 40;
-    if (progress + seg_w > bar_w) seg_w = bar_w - progress;
-    fb_fill_rect(tx + progress, bar_y, seg_w, 4, COL_THINK);
+    for (int dx = -26; dx <= 26; dx++) {
+        int x = cx + dx;
+        if (x < 0 || x >= MIMI_DISP_WIDTH) continue;
+        int a = (26 - (dx < 0 ? -dx : dx)) * 3;
+        cv_vline(&s_cv, x, 0, MIMI_DISP_HEIGHT, C_BRIGHT, a);
+    }
 }
 
+/* Retour a la ligne sur les mots, borne au nombre de lignes disponibles. */
+static void wrap_text(const char *src, int max_chars, int max_lines,
+                      char out[][48], int *n_lines)
+{
+    *n_lines = 0;
+    int i = 0, len = (int)strlen(src);
+    if (max_chars > 47) max_chars = 47;
+
+    while (i < len && *n_lines < max_lines) {
+        int take = (len - i < max_chars) ? (len - i) : max_chars;
+        int brk = take;
+        if (i + take < len) {
+            /* recule jusqu'a une espace pour ne pas couper un mot */
+            while (brk > 0 && src[i + brk] != ' ') brk--;
+            if (brk == 0) brk = take;
+        }
+        memcpy(out[*n_lines], src + i, brk);
+        out[*n_lines][brk] = '\0';
+        (*n_lines)++;
+        i += brk;
+        while (i < len && src[i] == ' ') i++;
+    }
+}
+
+/*
+ * Message. Le champ recule au second plan et le texte prend l'ecran. Pas de
+ * cadre, pas de bulle : le contraste et l'espace suffisent a separer.
+ */
 static void draw_message(void)
 {
-    fb_clear(COL_BG);
-    draw_status_bar();
+    field_input_t in;
+    fill_field_input(&in, 0.0f);
+    in.clock[0] = '\0';
+    in.footer[0] = '\0';
+    screen_field_draw(&s_cv, &in);
 
-    fb_draw_string(8, 18, "Last message:", COL_ACCENT, 1);
-    fb_fill_rect(8, 28, 200, 1, COL_ACCENT);
+    /* Voile sombre : le champ reste perceptible mais cesse de concurrencer
+     * le texte. C'est la meme idee qu'un fond flou derriere une modale. */
+    cv_rect(&s_cv, 0, 0, MIMI_DISP_WIDTH, MIMI_DISP_HEIGHT, C_VOID, 168);
 
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-    if (s_message[0]) {
-        int max_chars = s_typewriter_pos;
-        if (max_chars > (int)strlen(s_message)) max_chars = strlen(s_message);
-        fb_draw_string_n(8, 34, s_message, max_chars, COL_TEXT, 1);
-        if (s_typewriter_pos <= (int)strlen(s_message)) {
-            s_typewriter_pos += 2;
-        }
-    } else {
-        fb_draw_string(8, 34, "(aucun message)", COL_DIM, 1);
+    if (!s_message[0]) {
+        cv_text(&s_cv, MARGIN_X, MIMI_DISP_HEIGHT / 2 - 3,
+                "aucun message", C_DIM, 255);
+        return;
     }
-    xSemaphoreGive(s_mutex);
+
+    static char lines[9][48];
+    int n = 0;
+    int max_chars = (MIMI_DISP_WIDTH - MARGIN_X * 2) / 6;
+    wrap_text(s_message, max_chars, 9, lines, &n);
+
+    int lh = 13;
+    int y = (MIMI_DISP_HEIGHT - n * lh) / 2;
+    for (int i = 0; i < n; i++) {
+        cv_text(&s_cv, MARGIN_X, y + i * lh, lines[i], C_BRIGHT, 240);
+    }
 }
 
+/*
+ * Portail captif. Le seul ecran ou l'information prime sur la presence :
+ * quelqu'un est en train de lire un SSID pour le taper ailleurs. Champ
+ * eteint, hierarchie stricte, gros caracteres.
+ */
 static void draw_portal(void)
 {
-    fb_clear(COL_BG);
+    cv_clear(&s_cv, C_VOID);
+    cv_vgrad(&s_cv, 0, 0, MIMI_DISP_WIDTH, MIMI_DISP_HEIGHT, C_VOID, C_SUNKEN);
 
-    /* Paysage : lobster a gauche (scale 3), infos a droite */
-    int sprite_scale = 3;
-    int sx = 10;
-    int sy = (MIMI_DISP_HEIGHT - LOBSTER_H * sprite_scale) / 2 + 6;
-    fb_draw_sprite(sx, sy, lobster_idle, LOBSTER_W, LOBSTER_H, sprite_scale);
+    cv_label(&s_cv, MARGIN_X, MARGIN_Y + 4, "connecte-toi a", C_DIM, 255);
 
-    int tx = sx + LOBSTER_W * sprite_scale + 15;
-    fb_draw_string(tx, 10, "Setup Mode", COL_ACCENT, 2);
-    fb_draw_string(tx, 35, "WiFi:", COL_DIM, 1);
-    fb_draw_string(tx + 36, 35, MIMI_PORTAL_AP_SSID, COL_TEXT, 1);
-    fb_draw_string(tx, 50, "Pass:", COL_DIM, 1);
-    fb_draw_string(tx + 36, 50, MIMI_PORTAL_AP_PASS, COL_TEXT, 1);
-    fb_fill_rect(tx, 63, MIMI_DISP_WIDTH - tx - 5, 1, COL_DIM);
-    fb_draw_string(tx, 70, "Open:", COL_DIM, 1);
-    fb_draw_string(tx, 85, "192.168.4.1", COL_ACCENT, 2);
+    const char *ssid = "LilyClaw-Setup";
+    cv_text(&s_cv, MARGIN_X, MARGIN_Y + 22, ssid, C_BRIGHT, 255);
+
+    cv_hline(&s_cv, MARGIN_X, MARGIN_Y + 40,
+             MIMI_DISP_WIDTH - MARGIN_X * 2, C_HAIRLINE, 255);
+
+    cv_label(&s_cv, MARGIN_X, MARGIN_Y + 52, "puis ouvre", C_DIM, 255);
+    cv_bignum(&s_cv, MARGIN_X, MARGIN_Y + 68, 26, "192.168.4.1", C_ACCENT, 255);
+
+    /* Pastille qui respire : montre que l'appareil n'est pas fige pendant
+     * qu'on tape l'adresse sur un telephone. */
+    float t = (float)(esp_timer_get_time() / 1000) / 1000.0f;
+    int a = (int)(90.0f + 130.0f * (0.5f + 0.5f * sinf(t * 2.0f)));
+    cv_disc_q4(&s_cv, (MIMI_DISP_WIDTH - MARGIN_X) * 16,
+               (MIMI_DISP_HEIGHT - MARGIN_Y - 6) * 16, 44, C_ACCENT, a);
 }
 
+/*
+ * L'ancien economiseur etait un aquarium : homard qui se balade, bulles,
+ * algues. Il n'y a plus rien a economiser ni a divertir — le champ au repos
+ * est deja ce qu'on veut regarder. On reutilise donc le meme rendu, en
+ * retirant simplement le texte et en laissant l'etat interieur baisser
+ * naturellement de lui-meme.
+ */
 static void draw_screensaver(void)
 {
-    fb_clear(COL_OCEAN);
-
-    draw_seaweed();
-    bubbles_update();
-    bubbles_draw();
-
-    /* Lobster qui marche — scale 2 = 64x64, hauteur dispo ~150px */
-    int sprite_scale = 2;
-    int ly = MIMI_DISP_HEIGHT - 12 - LOBSTER_H * sprite_scale;
-
-    s_lobster_x += s_lobster_dir * 2;
-    if (s_lobster_x > MIMI_DISP_WIDTH - LOBSTER_W * sprite_scale - 5) {
-        s_lobster_dir = -1;
-    } else if (s_lobster_x < 5) {
-        s_lobster_dir = 1;
-    }
-
-    bool walk_anim = (s_frame_count / 3) % 2;
-    const uint16_t *frame = walk_anim ? lobster_blink : lobster_idle;
-    fb_draw_sprite(s_lobster_x, ly, frame, LOBSTER_W, LOBSTER_H, sprite_scale);
+    field_input_t in;
+    fill_field_input(&in, 0.0f);
+    in.footer[0] = '\0';
+    screen_field_draw(&s_cv, &in);
 }
 
 /* ---- Radar sonar ---- */
@@ -806,9 +663,11 @@ static void draw_radar(void)
     if (mode == RADAR_SENTINEL) {
         fb_draw_string(2, 2, "SENTINEL", COL_SENTINEL_ALERT, 1);
 
-        /* Clignotement si intrusion */
-        sentinel_alert_t alert = sonar_radar_check_intrusion();
-        if (alert.detected && (s_frame_count / 3) % 2) {
+        /* Clignotement si intrusion.
+         * peek et non check : check_intrusion() consomme l'alerte et
+         * body_animator en a besoin pour declencher la reaction physique. */
+        sentinel_alert_t alert;
+        if (sonar_radar_peek_alert(&alert, 2000) && (s_frame_count / 3) % 2) {
             fb_draw_string(60, 2, "ALERTE!", COL_SENTINEL_ALERT, 2);
         }
     } else {
@@ -906,139 +765,31 @@ static void draw_etchasketch(void)
 
 /* ---- Animation charge batterie ---- */
 
+/*
+ * Charge. Le champ continue de vivre ; l'etat de charge tient dans un filet
+ * horizontal qui se remplit. Pas d'icone de pile : a cette taille une icone
+ * de pile est un pictogramme de jouet.
+ */
 static void draw_charging(void)
 {
-    fb_clear(COL_BG);
+    field_input_t in;
+    fill_field_input(&in, 0.0f);
+    in.footer[0] = '\0';
+    screen_field_draw(&s_cv, &in);
 
-    int percent = battery_get_percent();
-    int voltage = battery_get_voltage_mv();
+    int pct = battery_get_percent();
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
 
-    /* Icone batterie centree — dimensions */
-    int batt_w = 120;   /* largeur corps batterie */
-    int batt_h = 60;    /* hauteur corps batterie */
-    int batt_x = (MIMI_DISP_WIDTH - batt_w) / 2;
-    int batt_y = 25;
-    int tip_w = 8;      /* borne positive */
-    int tip_h = 24;
+    int bw = MIMI_DISP_WIDTH - MARGIN_X * 2;
+    int by = MIMI_DISP_HEIGHT - MARGIN_Y - 10;
 
-    /* Contour batterie (blanc) */
-    /* Haut */
-    fb_fill_rect(batt_x, batt_y, batt_w, 3, COL_TEXT);
-    /* Bas */
-    fb_fill_rect(batt_x, batt_y + batt_h - 3, batt_w, 3, COL_TEXT);
-    /* Gauche */
-    fb_fill_rect(batt_x, batt_y, 3, batt_h, COL_TEXT);
-    /* Droite */
-    fb_fill_rect(batt_x + batt_w - 3, batt_y, 3, batt_h, COL_TEXT);
-    /* Borne positive (a droite) */
-    fb_fill_rect(batt_x + batt_w, batt_y + (batt_h - tip_h) / 2,
-                 tip_w, tip_h, COL_TEXT);
+    cv_hline(&s_cv, MARGIN_X, by, bw, C_HAIRLINE, 255);
+    cv_rect(&s_cv, MARGIN_X, by - 1, bw * pct / 100, 3, C_ACCENT, 255);
 
-    /* Interieur : fond sombre */
-    int inner_x = batt_x + 5;
-    int inner_y = batt_y + 5;
-    int inner_w = batt_w - 10;
-    int inner_h = batt_h - 10;
-    fb_fill_rect(inner_x, inner_y, inner_w, inner_h, COL_BATT_BG);
-
-    /* Remplissage anime — pulse doux pour simuler la charge */
-    int base_fill = percent * inner_w / 100;
-
-    /* Animation pulse : le remplissage "respire" un peu */
-    int pulse = 0;
-    if (percent < 100) {
-        /* Sinusoide lente : ±5 pixels */
-        int phase = (s_frame_count * 3) % 60;
-        if (phase < 30)
-            pulse = phase / 6;
-        else
-            pulse = (60 - phase) / 6;
-    }
-    int fill_w = base_fill + pulse;
-    if (fill_w > inner_w) fill_w = inner_w;
-    if (fill_w < 0) fill_w = 0;
-
-    /* Couleur de remplissage selon niveau */
-    uint16_t fill_col;
-    if (percent < 20)
-        fill_col = COL_RED;       /* critique = rouge */
-    else if (percent < 50)
-        fill_col = COL_ACCENT;    /* moyen = orange */
-    else
-        fill_col = COL_CHARGE;    /* bon = vert */
-
-    /* Dessiner le remplissage */
-    if (fill_w > 0) {
-        fb_fill_rect(inner_x, inner_y, fill_w, inner_h, fill_col);
-    }
-
-    /* Segments de separation (style batterie) */
-    for (int i = 1; i < 4; i++) {
-        int seg_x = inner_x + i * inner_w / 4;
-        fb_fill_rect(seg_x, inner_y, 1, inner_h, COL_BATT_BG);
-    }
-
-    /* Eclair anime au centre de la batterie (clignotant) */
-    if ((s_frame_count / 4) % 3 != 0) {  /* visible 2/3 du temps */
-        int lx = batt_x + batt_w / 2 - 6;
-        int ly = batt_y + 8;
-        /* Eclair simplifie en forme de Z */
-        /*   ##
-         *  ##
-         * ####
-         *   ##
-         *  ##
-         */
-        fb_fill_rect(lx + 4, ly,      8, 3, COL_BOLT);
-        fb_fill_rect(lx + 2, ly + 3,  8, 3, COL_BOLT);
-        fb_fill_rect(lx,     ly + 6,  12, 3, COL_BOLT);
-        fb_fill_rect(lx + 2, ly + 9,  8, 3, COL_BOLT);
-        fb_fill_rect(lx,     ly + 12, 8, 3, COL_BOLT);
-
-        /* Contour sombre pour contraste */
-        fb_fill_rect(lx + 3, ly - 1,   10, 1, COL_BG);
-        fb_fill_rect(lx - 1, ly + 15,  10, 1, COL_BG);
-    }
-
-    /* Pourcentage en gros sous la batterie */
-    char pct_str[16];
-    snprintf(pct_str, sizeof(pct_str), "%d%%", percent);
-    int pct_len = 0;
-    const char *p = pct_str;
-    while (*p) { pct_len++; p++; }
-    int pct_x = (MIMI_DISP_WIDTH - pct_len * 12) / 2;  /* scale 2 = 12px/char */
-    fb_draw_string(pct_x, batt_y + batt_h + 12, pct_str, COL_TEXT, 2);
-
-    /* Tension en petit sous le pourcentage */
-    char volt_str[24];
-    snprintf(volt_str, sizeof(volt_str), "%d.%02dV", voltage / 1000, (voltage % 1000) / 10);
-    int volt_len = 0;
-    const char *v = volt_str;
-    while (*v) { volt_len++; v++; }
-    int volt_x = (MIMI_DISP_WIDTH - volt_len * 6) / 2;
-    fb_draw_string(volt_x, batt_y + batt_h + 34, volt_str, COL_DIM, 1);
-
-    /* Texte "Charge..." anime en haut */
-    int dots = (s_frame_count / 5) % 4;
-    char charge_text[16] = "Charge";
-    for (int i = 0; i < dots; i++) strcat(charge_text, ".");
-    int ct_len = 0;
-    const char *c = charge_text;
-    while (*c) { ct_len++; c++; }
-    int ct_x = (MIMI_DISP_WIDTH - ct_len * 12) / 2;
-    fb_draw_string(ct_x, 6, charge_text, COL_CHARGE, 2);
-
-    /* Petites particules qui montent (effet charge) */
-    for (int i = 0; i < 5; i++) {
-        int px = inner_x + fill_w - 3 + (i * 7) % 12;
-        int py_base = inner_y + inner_h;
-        int py = py_base - ((s_frame_count * 2 + i * 8) % (inner_h + 15));
-        if (py >= inner_y && py < inner_y + inner_h && fill_w > 10) {
-            fb_pixel(px, py, COL_TEXT);
-            fb_pixel(px + 1, py, COL_TEXT);
-            fb_pixel(px, py - 1, COL_TEXT);
-        }
-    }
+    char pc[8];
+    snprintf(pc, sizeof(pc), "%d", pct);
+    cv_bignum(&s_cv, MARGIN_X, by - 30, 22, pc, C_BRIGHT, 200);
 }
 
 /* ---- Notification banner (slide depuis le bas) ---- */
@@ -1109,53 +860,41 @@ static void draw_transition(void)
 
 static void draw_boot_animation(void)
 {
-    if (!s_framebuf) {
-        fill_rect(0, 0, MIMI_DISP_WIDTH, MIMI_DISP_HEIGHT, COL_BG);
-        return;
-    }
+    if (!s_framebuf) return;
 
-    /* Paysage : lobster a gauche (scale 3), texte a droite */
-    int sprite_scale = 3;
-    int target_x = 10;
-    int target_y = (MIMI_DISP_HEIGHT - LOBSTER_H * sprite_scale) / 2 + 6;
-    int tx = target_x + LOBSTER_W * sprite_scale + 15;
+    /*
+     * Sequence d'allumage.
+     *
+     * L'ancienne faisait glisser le homard depuis la gauche avec un rebond,
+     * ecrivait "LilyClaw" lettre par lettre, puis un clin d'oeil : environ
+     * trois secondes pour annoncer un nom que l'utilisateur connait deja.
+     *
+     * Ce que fait un objet quand on l'allume, c'est apparaitre. La nouvelle
+     * sequence est une montee en intensite du champ sur ~900 ms : le meme
+     * rendu que le repos, mais qui emerge du noir. Rien a lire, rien a
+     * attendre.
+     */
+    const int frames = 26;
+    for (int f = 0; f < frames; f++) {
+        float k = (float)f / (float)(frames - 1);
+        float e = k * k * (3.0f - 2.0f * k);   /* lent, puis ouverture */
 
-    /* Phase 1 : lobster glisse depuis la gauche (12 frames) */
-    for (int f = 0; f < 12; f++) {
-        fb_clear(COL_BG);
-        int slide_x = -LOBSTER_W * sprite_scale + (target_x + LOBSTER_W * sprite_scale) * f / 11;
-        if (f >= 10) slide_x = target_x + (11 - f) * 3;  /* petit rebond */
-        fb_draw_sprite(slide_x, target_y, lobster_idle, LOBSTER_W, LOBSTER_H, sprite_scale);
+        field_input_t in;
+        memset(&in, 0, sizeof(in));
+        in.arousal     = 0.15f + 0.55f * e;
+        in.attention_x = -2.0f;
+        in.t_seconds   = (float)f * 0.07f;
+        in.online      = false;
+
+        screen_field_draw(&s_cv, &in);
+
+        int veil = (int)(255.0f * (1.0f - e));
+        if (veil > 0) {
+            cv_rect(&s_cv, 0, 0, MIMI_DISP_WIDTH, MIMI_DISP_HEIGHT, C_VOID, veil);
+        }
         fb_flush();
         vTaskDelay(pdMS_TO_TICKS(35));
     }
-
-    /* Phase 2 : texte lettre par lettre */
-    fb_clear(COL_BG);
-    fb_draw_sprite(target_x, target_y, lobster_idle, LOBSTER_W, LOBSTER_H, sprite_scale);
-    fb_flush();
-
-    const char *title = "LilyClaw";
-    for (int i = 0; title[i]; i++) {
-        fb_draw_char(tx + i * 12, 40, title[i], COL_ACCENT, 2);
-        fb_flush();
-        vTaskDelay(pdMS_TO_TICKS(70));
-    }
-
-    /* Phase 3 : clin d'oeil */
-    vTaskDelay(pdMS_TO_TICKS(250));
-    fb_clear(COL_BG);
-    fb_draw_sprite(target_x, target_y, lobster_blink, LOBSTER_W, LOBSTER_H, sprite_scale);
-    fb_draw_string(tx, 40, "LilyClaw", COL_ACCENT, 2);
-    fb_flush();
-    vTaskDelay(pdMS_TO_TICKS(200));
-
-    fb_clear(COL_BG);
-    fb_draw_sprite(target_x, target_y, lobster_idle, LOBSTER_W, LOBSTER_H, sprite_scale);
-    fb_draw_string(tx, 40, "LilyClaw", COL_ACCENT, 2);
-    fb_draw_string(tx, 65, "Ready!", COL_GREEN, 1);
-    fb_flush();
-    vTaskDelay(pdMS_TO_TICKS(600));
 }
 
 /* ---- Mise a jour automatique de l'humeur ---- */
@@ -1191,16 +930,19 @@ static void display_task(void *arg)
     ESP_LOGI(TAG, "Display task started");
 
     /* Allocation framebuffer PSRAM */
+    /* canvas branche juste apres */
     s_framebuf = heap_caps_malloc(MIMI_DISP_WIDTH * MIMI_DISP_HEIGHT * sizeof(uint16_t),
                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_framebuf) {
         ESP_LOGI(TAG, "PSRAM framebuffer OK (%d bytes)", MIMI_DISP_WIDTH * MIMI_DISP_HEIGHT * 2);
+        s_cv.px = s_framebuf;
     } else {
-        ESP_LOGW(TAG, "Pas de PSRAM, framebuffer en bande");
+        /* Le nouveau rendu (champ volumetrique, alpha, tramage) travaille en
+         * acces aleatoire sur l'image entiere : il ne peut pas fonctionner en
+         * mode bande. Sans PSRAM on n'a pas d'ecran, et il vaut mieux le dire
+         * franchement que d'afficher n'importe quoi. */
+        ESP_LOGE(TAG, "Pas de PSRAM : le rendu graphique est indisponible");
     }
-
-    /* Init bulles */
-    bubbles_init();
     s_last_activity_us = esp_timer_get_time();
 
 #ifdef MIMI_HAS_SERVOS

@@ -44,3 +44,10 @@ void display_ui_etch_set_drawing(bool drawing);  /* main proche = dessine */
 void display_ui_etch_clear(void);                /* efface le canvas */
 void display_ui_etch_next_color(void);           /* couleur suivante */
 #endif
+
+/**
+ * Direction de la personne detectee, pour que le champ se decale vers elle.
+ * -1 = a gauche, +1 = a droite, -2 = personne. Pousse par body_animator ;
+ * sans capteurs la valeur reste a -2 et le champ demeure centre.
+ */
+void display_ui_set_attention(float x);

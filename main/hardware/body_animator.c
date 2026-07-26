@@ -1,5 +1,8 @@
 #include "body_animator.h"
 #include "soul/soul_task.h"
+#ifdef MIMI_HAS_DISPLAY
+#include "display/display_ui.h"
+#endif
 #include "util/safe_str.h"
 #include "hardware/servo_driver.h"
 #include "hardware/ultrasonic.h"
@@ -173,6 +176,28 @@ static uint8_t apply_blink(uint8_t claw_angle)
 /* 3. Regard vivant avec micro-mouvements et saccades */
 /* Variables deja declarees en haut du fichier (volatile) */
 
+/*
+ * Transmet a l'ecran la direction ou le corps regarde, pour que le champ
+ * lumineux se decale du meme cote. Sans ca, le corps se tourne vers la
+ * personne pendant que l'ecran reste centre : les deux se contredisent et
+ * l'illusion de presence tombe.
+ *
+ * SERVO_HEAD_H va de 0 a 180, 90 = face. On normalise sur -1..+1, et on
+ * renvoie -2 quand il n'y a personne pour que l'ecran se recentre.
+ */
+static void push_attention_to_display(void)
+{
+#ifdef MIMI_HAS_DISPLAY
+    float x = -2.0f;
+    if (s_last_distance > 0 && s_last_distance < MIMI_PRESENCE_MAX_CM) {
+        x = ((float)s_gaze_current_h - 90.0f) / 90.0f;
+        if (x < -1.0f) x = -1.0f;
+        if (x >  1.0f) x =  1.0f;
+    }
+    display_ui_set_attention(x);
+#endif
+}
+
 static void update_living_gaze(void)
 {
     /* Saccades : changements brusques de direction */
@@ -333,6 +358,7 @@ static void anim_idle(void)
 {
     update_blink_schedule();
     update_living_gaze();
+    push_attention_to_display();
     
     uint8_t hh = breathe_emotional(clamp_angle((int)s_gaze_current_h));
     uint8_t hv = breathe_emotional(clamp_angle((int)s_gaze_current_v));

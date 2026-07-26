@@ -1,4 +1,5 @@
 #include "sonar_radar.h"
+#include "esp_timer.h"
 #include "util/safe_str.h"
 #include "mimi_config.h"
 #include "bus/message_bus.h"
@@ -30,6 +31,19 @@ static char s_alert_chat_id[32] = {0};
 
 /* Anti-spam : delai minimum entre alertes */
 static int s_alert_cooldown = 0;
+
+/* Copie de la derniere intrusion, LISIBLE SANS LA CONSOMMER.
+ *
+ * BUG CORRIGE : sonar_radar_check_intrusion() remet le cooldown a zero, donc
+ * le premier appelant "mange" l'alerte. body_animator ET display_ui
+ * l'appelaient tous les deux a chaque image : selon l'ordonnancement, tantot
+ * le corps pointait l'intrusion sans que l'ecran l'affiche, tantot l'inverse.
+ * Un bug intermittent et impossible a reproduire a la demande.
+ *
+ * Un seul consommateur desormais (body_animator, qui declenche la reaction
+ * physique et previent l'ame) ; tous les autres lisent cet etat. */
+static sentinel_alert_t s_last_alert = {0};
+static int64_t s_last_alert_us = 0;
 #define ALERT_COOLDOWN_TICKS   50  /* ~10 secondes a 200ms/tick */
 
 esp_err_t sonar_radar_init(void)
@@ -181,6 +195,8 @@ sentinel_alert_t sonar_radar_check_intrusion(void)
         alert.baseline = s_baseline[worst_idx];
 
         s_alert_cooldown = ALERT_COOLDOWN_TICKS;
+        s_last_alert = alert;              /* copie consultable sans consommer */
+        s_last_alert_us   = esp_timer_get_time();
 
         ESP_LOGW(TAG, "INTRUSION: angle=%d dist=%dcm (baseline=%dcm)",
                  alert.angle, alert.distance,
@@ -302,4 +318,13 @@ void sonar_radar_build_report(char *buf, size_t size)
     sb_printf(&sb, "Mode: %s\n",
               s_mode == RADAR_OFF ? "off" :
               s_mode == RADAR_SCAN ? "scan" : "sentinel");
+}
+
+bool sonar_radar_peek_alert(sentinel_alert_t *out, uint32_t max_age_ms)
+{
+    if (!s_last_alert.detected || s_last_alert_us == 0) return false;
+    int64_t age_ms = (esp_timer_get_time() - s_last_alert_us) / 1000;
+    if (age_ms > (int64_t)max_age_ms) return false;
+    if (out) *out = s_last_alert;
+    return true;
 }

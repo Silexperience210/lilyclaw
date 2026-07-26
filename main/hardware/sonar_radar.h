@@ -61,7 +61,12 @@ radar_mode_t sonar_radar_get_mode(void);
 
 /* Sentinelle */
 void sonar_radar_save_baseline(void);    /* sweep actuel → baseline */
+/* CONSOMME l'alerte (arme le cooldown). Un seul appelant : body_animator. */
 sentinel_alert_t sonar_radar_check_intrusion(void);
+
+/* Lit la derniere intrusion SANS la consommer. Pour l'affichage et tout
+ * autre observateur. `max_age_ms` borne la fraicheur. */
+bool sonar_radar_peek_alert(sentinel_alert_t *out, uint32_t max_age_ms);
 
 /* Configure le chat_id pour les alertes sentinelle */
 void sonar_radar_set_alert_target(const char *channel, const char *chat_id);
