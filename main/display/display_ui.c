@@ -514,7 +514,7 @@ static void fb_draw_line(int x0, int y0, int x1, int y1, uint16_t color)
 
 static void draw_radar(void)
 {
-    fb_clear(COL_RADAR_BG);
+    cv_clear(&s_cv, COL_RADAR_BG);
 
     /* Centre du radar : bas-centre de l'ecran */
     int cx = MIMI_DISP_WIDTH / 2;   /* 160 */
@@ -645,7 +645,7 @@ static void draw_etchasketch(void)
 {
     if (!s_etch_canvas) return;
 
-    fb_clear(COL_BG);
+    cv_clear(&s_cv, COL_BG);
 
     /* Dessiner le canvas a scale 2x */
     for (int y = 0; y < ETCH_H; y++) {
