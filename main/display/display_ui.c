@@ -251,13 +251,6 @@ static uint16_t s_line_buf[MIMI_DISP_WIDTH * MIMI_DISP_BUF_LINES];
 
 /* ---- Helpers PSRAM framebuffer ---- */
 
-static void fb_clear(uint16_t color)
-{
-    if (s_framebuf) {
-        for (int i = 0; i < MIMI_DISP_WIDTH * MIMI_DISP_HEIGHT; i++)
-            s_framebuf[i] = color;
-    }
-}
 
 static void fb_pixel(int x, int y, uint16_t color)
 {
@@ -314,28 +307,6 @@ static void fb_draw_string(int x, int y, const char *str, uint16_t color, int sc
 }
 
 /* Dessine un nombre limite de caracteres (typewriter) */
-static void fb_draw_string_n(int x, int y, const char *str, int max_chars,
-                              uint16_t color, int scale)
-{
-    int cx = x;
-    int count = 0;
-    while (*str && count < max_chars) {
-        if (*str == '\n') {
-            y += (FONT_H + 2) * scale;
-            cx = x;
-            str++;
-            continue;
-        }
-        fb_draw_char(cx, y, *str, color, scale);
-        cx += (FONT_W + CHAR_SPACING) * scale;
-        if (cx + FONT_W * scale > MIMI_DISP_WIDTH) {
-            y += (FONT_H + 2) * scale;
-            cx = x;
-        }
-        str++;
-        count++;
-    }
-}
 
 
 /* Flush framebuffer PSRAM vers l'ecran par bandes */
@@ -351,22 +322,6 @@ static void fb_flush(void)
 }
 
 /* ---- Fallback sans PSRAM (ancienne methode) ---- */
-static void fill_rect(int x, int y, int w, int h, uint16_t color)
-{
-    int buf_size = w * h;
-    if (buf_size > MIMI_DISP_WIDTH * MIMI_DISP_BUF_LINES) {
-        int lines_per_batch = MIMI_DISP_BUF_LINES;
-        for (int row = 0; row < h; row += lines_per_batch) {
-            int batch_h = (row + lines_per_batch > h) ? (h - row) : lines_per_batch;
-            int count = w * batch_h;
-            for (int i = 0; i < count; i++) s_line_buf[i] = color;
-            display_hal_flush(x, y + row, w, batch_h, s_line_buf);
-        }
-    } else {
-        for (int i = 0; i < buf_size; i++) s_line_buf[i] = color;
-        display_hal_flush(x, y, w, h, s_line_buf);
-    }
-}
 
 /* ---- Emotions : modification des yeux sur le sprite ---- */
 
