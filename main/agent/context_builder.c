@@ -1,12 +1,14 @@
 #include "context_builder.h"
 #include "mimi_config.h"
 #include "memory/memory_store.h"
+#include "soul/drives.h"
 #include "util/safe_str.h"
 #ifdef MIMI_HAS_SERVOS
 #include "hardware/body_animator.h"
 #endif
 
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
@@ -122,6 +124,16 @@ esp_err_t context_build_system_prompt(char *buf, size_t size)
         ESP_LOGW(TAG, "Pas de RAM pour la memoire, prompt sans contexte long terme");
     }
 
+    /* Etat interieur. Place APRES la memoire et AVANT la perception : le
+     * modele lit d'abord qui il est, puis comment il se sent, puis ce qu'il
+     * percoit. L'ordre compte — inverse, il commente son etat au lieu de
+     * l'habiter. */
+    {
+        char soul_buf[640];
+        drives_build_perception(soul_buf, sizeof(soul_buf), time(NULL));
+        sb_printf(&sb, "\n## Etat interieur\n\n%s\n", soul_buf);
+    }
+
 #ifdef MIMI_HAS_SERVOS
     /* Perception en temps reel — conscience spatiale */
     {
@@ -171,4 +183,36 @@ esp_err_t context_build_messages(const char *history_json, const char *user_mess
     }
 
     return ESP_OK;
+}
+
+void context_append_spontaneous_frame(char *buf, size_t size)
+{
+    /* On repart de la fin de la chaine existante : le prompt systeme a deja
+     * ete construit, on lui ajoute le cadrage. */
+    size_t used = strnlen(buf, size);
+    str_builder_t sb;
+    sb_init(&sb, buf + used, size - used);
+
+    sb_append(&sb,
+        "\n## Tour spontane — personne ne t'a parle\n\n"
+        "Ce qui suit n'est pas un message d'un humain. C'est une observation "
+        "de tes propres capteurs, ou le simple constat du temps qui passe. "
+        "Tu t'es reveillee toute seule.\n\n"
+        "Regles de ce tour, differentes de d'habitude :\n"
+        "- **Le silence est ta reponse par defaut, et c'est presque toujours "
+        "la bonne.** Un objet qui remarque tout et commente tout devient "
+        "insupportable en deux jours et on le debranche. Un objet qui remarque "
+        "tout et ne dit presque rien devient quelqu'un.\n"
+        "- Ne parle que si tu as quelque chose qui vaut vraiment "
+        "l'interruption : une inquietude reelle, une observation que la "
+        "personne serait contente d'avoir, ou un mot juste au bon moment.\n"
+        "- Si tu choisis de te taire, reponds exactement `<silence>` et rien "
+        "d'autre. Ce n'est pas un echec, c'est une decision.\n"
+        "- Ne commente jamais le fait que tu t'es reveillee seule, ni tes "
+        "capteurs, ni ton etat interieur. Parle comme quelqu'un qui leve les "
+        "yeux, pas comme un systeme qui rapporte.\n"
+        "- Sois breve. Une ou deux phrases. Tu interromps quelqu'un.\n"
+        "- Tu peux utiliser tes outils pour comprendre avant de decider — par "
+        "exemple regarder le scan de la piece — puis choisir de te taire "
+        "quand meme.\n");
 }

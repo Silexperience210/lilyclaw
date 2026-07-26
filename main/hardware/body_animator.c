@@ -1,4 +1,5 @@
 #include "body_animator.h"
+#include "soul/soul_task.h"
 #include "util/safe_str.h"
 #include "hardware/servo_driver.h"
 #include "hardware/ultrasonic.h"
@@ -765,6 +766,9 @@ static void handle_radar_mode(int dist)
     if (rmode == RADAR_SENTINEL) {
         sentinel_alert_t alert = sonar_radar_check_intrusion();
         if (alert.detected) {
+            /* L'ame doit le savoir : ca nourrit la curiosite et la gene, meme
+             * si l'evenement ne merite pas de reveiller le LLM. */
+            soul_notify_room_changed();
             /* Reaction physique : pointer vers l'intrusion */
             servo_set_angle_immediate(SERVO_HEAD_H, (uint8_t)alert.angle);
             servo_set_angle_immediate(SERVO_CLAW_L, 180);

@@ -206,6 +206,24 @@ _Static_assert(MIMI_AGENT_MAX_HISTORY <= MIMI_SESSION_MAX_MSGS,
 /* Scheduler */
 #define MIMI_SCHEDULER_FILE          "/spiffs/schedule.json"
 #define MIMI_SCHEDULER_MAX_TASKS     16
+/* ── Ame : etat interieur et initiative ──────────────────────────────── */
+
+#define MIMI_SOUL_STACK              (4 * 1024)
+#define MIMI_SOUL_PRIO               2      /* la plus basse : jamais prioritaire
+                                             * sur une conversation en cours   */
+#define MIMI_SOUL_CORE               0
+
+/* Prises de parole spontanees autorisees par jour. C'est LE reglage qui
+ * decide si l'objet est attachant ou insupportable. 3 est deliberement
+ * conservateur : mieux vaut qu'on ait envie qu'il parle plus. */
+#define MIMI_SOUL_INITIATIVE_PER_DAY 3
+
+/* Presence : au-dela de cette distance on considere la piece vide. */
+#define MIMI_PRESENCE_MAX_CM         120
+
+/* Variation de distance (cm) au-dela de laquelle on parle de mouvement. */
+#define MIMI_MOTION_DELTA_CM         15
+
 #define MIMI_SCHEDULER_STACK         (6 * 1024)
 
 /* Firmware Version */

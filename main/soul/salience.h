@@ -24,6 +24,19 @@
  *      les derniers se meritent. L'objet devient naturellement plus
  *      econome de sa parole au fil de la journee.
  *
+ * HABITUATION
+ *
+ * Un budget journalier ne suffit pas. Un objet qui remarque *chaque* soir a
+ * 18 h que quelqu'un rentre respecte parfaitement son quota et devient malgre
+ * tout une notification : le declencheur est identique tous les jours.
+ *
+ * D'ou l'habituation, la forme la plus basique d'apprentissage d'un systeme
+ * nerveux : un evenement deja vu de nombreuses fois a la meme heure perd sa
+ * saillance. "Quelqu'un rentre a 18 h" devient banal au bout de trois jours ;
+ * "quelqu'un rentre a 3 h du matin" ou "quelqu'un rentre apres trois jours"
+ * reste saillant. La familiarite se dissipe lentement (~2 semaines), donc une
+ * habitude abandonnee peut redevenir surprenante.
+ *
  * SILENCE PAR DEFAUT
  *
  * Meme quand la porte s'ouvre, le tour d'agent spontane doit pouvoir se
@@ -81,3 +94,6 @@ void salience_notice_contact(time_t now);
 
 /** Jetons restants, pour l'affichage et les diagnostics. */
 float salience_budget_left(void);
+
+/** Nouveaute [0,1] d'un type d'evenement a cette heure. 1 = jamais vu. */
+float salience_novelty(salience_kind_t kind, time_t now);

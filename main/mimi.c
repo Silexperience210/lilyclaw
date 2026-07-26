@@ -11,6 +11,7 @@
 
 #include "mimi_config.h"
 #include "bus/message_bus.h"
+#include "soul/soul_task.h"
 #include "wifi/wifi_manager.h"
 #include "telegram/telegram_bot.h"
 #include "llm/llm_proxy.h"
@@ -183,6 +184,7 @@ void app_main(void)
                 ESP_ERROR_CHECK(agent_loop_start());
                 ESP_ERROR_CHECK(task_scheduler_start());
                 ESP_ERROR_CHECK(ws_server_start());
+                ESP_ERROR_CHECK(soul_task_start());
 
                 /* Outbound dispatch task */
                 xTaskCreatePinnedToCore(

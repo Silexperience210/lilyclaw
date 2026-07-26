@@ -7,6 +7,8 @@
 #include "tools/tool_registry.h"
 #include "tools/tool_timer.h"
 #include "scheduler/task_scheduler.h"
+#include "soul/soul_task.h"
+#include "soul/drives.h"
 #ifdef MIMI_HAS_DISPLAY
 #include "display/display_ui.h"
 #include "power/sleep_manager.h"
@@ -18,6 +20,8 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <time.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_random.h"
@@ -112,16 +116,47 @@ static void agent_loop_task(void *arg)
         esp_err_t err = message_bus_pop_inbound(&msg, UINT32_MAX);
         if (err != ESP_OK) continue;
 
-        ESP_LOGI(TAG, "Processing message from %s:%s", msg.channel, msg.chat_id);
+        /* Tour spontane : c'est le monde qui a reveille l'agent, pas un
+         * humain. Le canal d'ARRIVEE est "self" mais la reponse eventuelle
+         * doit partir vers un vrai canal. */
+        const bool spontaneous = (strcmp(msg.channel, MIMI_CHAN_SELF) == 0);
+
+        char reply_channel[16];
+        strncpy(reply_channel, msg.channel, sizeof(reply_channel) - 1);
+        reply_channel[sizeof(reply_channel) - 1] = '\0';
+
+        if (spontaneous) {
+            char pc[16], pid[32];
+            if (!message_bus_get_primary_chat(pc, sizeof(pc), pid, sizeof(pid))) {
+                ESP_LOGW(TAG, "Tour spontane sans destinataire, abandon");
+                free(msg.content);
+                continue;
+            }
+            strncpy(reply_channel, pc, sizeof(reply_channel) - 1);
+            reply_channel[sizeof(reply_channel) - 1] = '\0';
+        } else {
+            /* Un humain a parle : c'est lui le destinataire de reference pour
+             * tout ce que l'appareil emettra de sa propre initiative. */
+            message_bus_set_primary_chat(msg.channel, msg.chat_id);
+            soul_notify_contact();
+        }
+
+        ESP_LOGI(TAG, "Processing %s message from %s:%s",
+                 spontaneous ? "spontaneous" : "user", msg.channel, msg.chat_id);
+
         /* Propagate current chat context to tools that need it */
         tool_timer_set_chat(msg.chat_id);
         scheduler_set_chat(msg.chat_id);
 #ifdef MIMI_HAS_SERVOS
         /* Enregistrer le canal pour les alertes sentinelle */
-        tool_perception_set_chat(msg.channel, msg.chat_id);
-        /* Reaction corporelle : surprise a la reception du message */
-        body_animator_set_mood(MOOD_EXCITED);
-        vTaskDelay(pdMS_TO_TICKS(500));
+        tool_perception_set_chat(reply_channel, msg.chat_id);
+        if (!spontaneous) {
+            /* Reaction corporelle : surprise a la reception du message.
+             * Absurde sur un tour spontane — il ne va pas etre surpris par
+             * sa propre pensee. */
+            body_animator_set_mood(MOOD_EXCITED);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
 #endif
 #ifdef MIMI_HAS_DISPLAY
         display_ui_set_state(DISPLAY_THINKING);
@@ -134,6 +169,9 @@ static void agent_loop_task(void *arg)
 
         /* 1. Build system prompt */
         context_build_system_prompt(system_prompt, MIMI_CONTEXT_BUF_SIZE);
+        if (spontaneous) {
+            context_append_spontaneous_frame(system_prompt, MIMI_CONTEXT_BUF_SIZE);
+        }
 
         /* 2. Load session history into cJSON array */
         session_get_history_json(msg.chat_id, history_json,
@@ -159,7 +197,7 @@ static void agent_loop_task(void *arg)
              * Telegram parasites pour une seule question utilisant des outils.
              * Maintenant : une fois au debut, puis seulement si la boucle
              * s'eternise (>= 3 tours d'outils). */
-            if (iteration == 0 || iteration == 3 || iteration == 6) {
+            if (!spontaneous && (iteration == 0 || iteration == 3 || iteration == 6)) {
                 static const char *working_phrases[] = {
                     "LilyClaw\xF0\x9F\x98\x97 is working...",
                     "LilyClaw\xF0\x9F\x90\xBE is thinking...",
@@ -236,9 +274,48 @@ static void agent_loop_task(void *arg)
         cJSON_Delete(messages);
 
         /* 5. Send response */
-        if (final_text && final_text[0]) {
-            /* Save to session (only user text + final assistant text) */
-            session_append(msg.chat_id, "user", msg.content);
+        /* Le modele a choisi de se taire. C'est un resultat legitime, pas une
+         * panne : on ne l'ecrit pas dans l'historique, on n'emet rien, et on
+         * ne montre rien a l'ecran. Un objet qui a remarque quelque chose et
+         * a decide de ne rien dire est plus vivant qu'un objet qui commente
+         * tout. */
+        bool chose_silence = false;
+        if (spontaneous && final_text) {
+            const char *t = final_text;
+            while (*t == ' ' || *t == '\n' || *t == '\r' || *t == '\t') t++;
+            chose_silence = (*t == '\0') || (strncmp(t, "<silence>", 9) == 0);
+        }
+
+        if (chose_silence) {
+            ESP_LOGI(TAG, "Tour spontane : il a choisi de se taire");
+            free(final_text);
+            /* La curiosite retombe : il a regarde, il a compris, il passe a
+             * autre chose. Sans ca, la meme observation le hanterait en
+             * boucle jusqu'a epuisement du budget de parole. */
+            drives_notice(DRIVE_EV_EXPLAINED, time(NULL));
+#ifdef MIMI_HAS_DISPLAY
+            display_ui_set_state(DISPLAY_IDLE);
+#endif
+#ifdef MIMI_HAS_SERVOS
+            body_animator_set_state(DISPLAY_IDLE);
+#endif
+        } else if (final_text && final_text[0]) {
+            /* Save to session.
+             * Sur un tour spontane, msg.content est une observation capteur,
+             * pas une phrase humaine : l'inscrire comme "user" ferait croire
+             * au modele, au tour suivant, que quelqu'un lui a dit ca. On la
+             * marque explicitement. */
+            if (spontaneous) {
+                char note[192];
+                snprintf(note, sizeof(note),
+                         "[observation de tes capteurs, personne n'a parle] %s",
+                         msg.content);
+                session_append(msg.chat_id, "user", note);
+                drives_notice(DRIVE_EV_SPOKE_UP, time(NULL));
+                drives_notice(DRIVE_EV_EXPLAINED, time(NULL));
+            } else {
+                session_append(msg.chat_id, "user", msg.content);
+            }
             session_append(msg.chat_id, "assistant", final_text);
 
 #ifdef MIMI_HAS_DISPLAY
@@ -255,12 +332,26 @@ static void agent_loop_task(void *arg)
 
             /* Push response to outbound */
             mimi_msg_t out = {0};
-            strncpy(out.channel, msg.channel, sizeof(out.channel) - 1);
+            strncpy(out.channel, reply_channel, sizeof(out.channel) - 1);
             strncpy(out.chat_id, msg.chat_id, sizeof(out.chat_id) - 1);
             out.content = final_text;  /* transfer ownership */
             if (message_bus_push_outbound(&out) != ESP_OK) {
                 free(final_text);   /* sinon la reponse fuit quand la file est pleine */
             }
+        } else if (spontaneous) {
+            /* Panne pendant un tour spontane : on se tait. Recevoir
+             * "Le service LLM est injoignable" a 3 h du matin sans avoir rien
+             * demande est exactement ce qui fait debrancher l'objet. */
+            ESP_LOGW(TAG, "Tour spontane echoue (%s), silence",
+                     esp_err_to_name(last_error));
+            free(final_text);
+#ifdef MIMI_HAS_DISPLAY
+            display_ui_set_state(DISPLAY_IDLE);
+#endif
+#ifdef MIMI_HAS_SERVOS
+            body_animator_set_state(DISPLAY_IDLE);
+            body_animator_set_mood(MOOD_NEUTRAL);
+#endif
         } else {
             /* Error or empty response */
             free(final_text);
@@ -279,7 +370,7 @@ static void agent_loop_task(void *arg)
             }
 
             mimi_msg_t out = {0};
-            strncpy(out.channel, msg.channel, sizeof(out.channel) - 1);
+            strncpy(out.channel, reply_channel, sizeof(out.channel) - 1);
             strncpy(out.chat_id, msg.chat_id, sizeof(out.chat_id) - 1);
             out.content = strdup(reason);
             if (out.content && message_bus_push_outbound(&out) != ESP_OK) {

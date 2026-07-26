@@ -23,6 +23,7 @@ set(SRCS
     "portal/captive_portal.c"
     "soul/drives.c"
     "soul/salience.c"
+    "soul/soul_task.c"
 )
 
 # v1.2 : ecran T-Display S3 + boutons + deep sleep

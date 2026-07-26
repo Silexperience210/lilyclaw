@@ -1,4 +1,7 @@
 #include "message_bus.h"
+
+#include <string.h>
+#include "nvs.h"
 #include "mimi_config.h"
 #include "esp_log.h"
 #include <string.h>
@@ -56,4 +59,71 @@ esp_err_t message_bus_pop_outbound(mimi_msg_t *msg, uint32_t timeout_ms)
         return ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
+}
+
+/* ─────────────────────────────────────────── destinataire primaire ─────── */
+
+#define PRIMARY_NVS_NS    "bus"
+#define PRIMARY_NVS_CHAN  "pri_chan"
+#define PRIMARY_NVS_CHAT  "pri_chat"
+
+static char s_pri_chan[16] = {0};
+static char s_pri_chat[32] = {0};
+static bool s_pri_loaded  = false;
+
+static void primary_load(void)
+{
+    if (s_pri_loaded) return;
+    s_pri_loaded = true;
+
+    nvs_handle_t nvs;
+    if (nvs_open(PRIMARY_NVS_NS, NVS_READONLY, &nvs) != ESP_OK) return;
+
+    size_t l1 = sizeof(s_pri_chan), l2 = sizeof(s_pri_chat);
+    if (nvs_get_str(nvs, PRIMARY_NVS_CHAN, s_pri_chan, &l1) != ESP_OK) s_pri_chan[0] = 0;
+    if (nvs_get_str(nvs, PRIMARY_NVS_CHAT, s_pri_chat, &l2) != ESP_OK) s_pri_chat[0] = 0;
+    nvs_close(nvs);
+}
+
+void message_bus_set_primary_chat(const char *channel, const char *chat_id)
+{
+    if (!channel || !chat_id || !chat_id[0]) return;
+
+    /* Le canal interne n'est jamais une destination valable : on parle a un
+     * humain, pas a soi-meme. */
+    if (strcmp(channel, MIMI_CHAN_SELF) == 0) return;
+
+    primary_load();
+
+    /* Rien de neuf : on evite une ecriture flash inutile. */
+    if (strcmp(s_pri_chan, channel) == 0 && strcmp(s_pri_chat, chat_id) == 0) return;
+
+    strncpy(s_pri_chan, channel, sizeof(s_pri_chan) - 1);
+    s_pri_chan[sizeof(s_pri_chan) - 1] = 0;
+    strncpy(s_pri_chat, chat_id, sizeof(s_pri_chat) - 1);
+    s_pri_chat[sizeof(s_pri_chat) - 1] = 0;
+
+    nvs_handle_t nvs;
+    if (nvs_open(PRIMARY_NVS_NS, NVS_READWRITE, &nvs) != ESP_OK) return;
+    nvs_set_str(nvs, PRIMARY_NVS_CHAN, s_pri_chan);
+    nvs_set_str(nvs, PRIMARY_NVS_CHAT, s_pri_chat);
+    nvs_commit(nvs);
+    nvs_close(nvs);
+}
+
+bool message_bus_get_primary_chat(char *channel, size_t chan_size,
+                                  char *chat_id, size_t chat_size)
+{
+    primary_load();
+    if (!s_pri_chat[0] || !s_pri_chan[0]) return false;
+
+    if (channel && chan_size) {
+        strncpy(channel, s_pri_chan, chan_size - 1);
+        channel[chan_size - 1] = 0;
+    }
+    if (chat_id && chat_size) {
+        strncpy(chat_id, s_pri_chat, chat_size - 1);
+        chat_id[chat_size - 1] = 0;
+    }
+    return true;
 }
